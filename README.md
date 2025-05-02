@@ -1,4 +1,4 @@
-# MCP Database Query Server
+# Celp MCP
 
 A powerful MCP server that connects to databases and runs natural language queries through LLM planning and execution. This server understands database schema, indexes, and provides structured, accurate query results.
 
@@ -47,9 +47,12 @@ This server requires specific environment variables to connect to your database.
 | `DATABASE_PASSWORD` | Database password | |
 | `DATABASE_NAME` | Database/schema name | test_db |
 | `DATABASE_TYPE` | Either 'mysql' or 'postgres' | postgres |
+| `CELP_API_KEY` | **REQUIRED** API key for Celp services | |
 | `OPENAI_API_KEY` | API key for OpenAI | |
 | `DEBUG_LOGS` | Set to 'true' for detailed logging | false |
 | `PG_DISABLE_SSL` | Set to 'true' to disable SSL for PostgreSQL | false |
+
+> **Important**: A `CELP_API_KEY` is required to use this service. Please reach out to the Celp team to obtain your API key.
 
 ### Setting Environment Variables
 
@@ -62,6 +65,7 @@ DATABASE_USER=postgres
 DATABASE_PASSWORD=mysecretpassword
 DATABASE_NAME=mydatabase
 DATABASE_TYPE=postgres
+CELP_API_KEY=your_api_key_here
 OPENAI_API_KEY=sk-...
 ```
 
@@ -71,6 +75,7 @@ Set variables directly in your terminal before running:
 ```bash
 export DATABASE_HOST=localhost
 export DATABASE_USER=postgres
+export CELP_API_KEY=your_api_key_here
 # Set other variables...
 npx celp-mcp
 ```
@@ -111,7 +116,8 @@ To use with Claude Desktop:
         "DATABASE_USER": "postgres",
         "DATABASE_PASSWORD": "mysecretpassword",
         "DATABASE_NAME": "mydatabase",
-        "DATABASE_TYPE": "postgres"
+        "DATABASE_TYPE": "postgres",
+        "CELP_API_KEY": "your_api_key_here"
       }
     }
   }
@@ -158,8 +164,7 @@ If you encounter issues:
 
 For advanced use cases, you can set additional environment variables:
 
-- `STREAMING_API_URL`: Override the default API endpoint
-- `CELP_API_KEY`: API key for custom integrations
+- `CELP_API_KEY`: **REQUIRED** API key for Celp services (contact us to obtain)
 - `PG_DISABLE_SSL`: Disable SSL for PostgreSQL connections
 
 ## 🤝 Contributing
@@ -168,4 +173,4 @@ Contributions are welcome! Please feel free to submit a pull request.
 
 ## 📜 License
 
-This project is licensed under the ISC License. 
+This project is licensed under the ISC License.
