@@ -1,4 +1,4 @@
-# MCP Database Query Server
+# Celp MCP
 
 A server that connects to databases and runs natural language queries through LLM planning and execution.
 
