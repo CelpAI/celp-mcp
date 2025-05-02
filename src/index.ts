@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env node
 /**
  * celp‑stdio MCP server —— faithful port of the reference AnalysisClient
  */

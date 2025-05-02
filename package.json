@@ -1,8 +1,8 @@
 {
-  "name": "mcp-server",
+  "name": "celp-mcp",
   "version": "1.0.0",
   "bin": {
-    "run": "./build/index.js"
+    "celp-mcp": "./build/index.js"
   },
   "files": [
     "build"
@@ -12,22 +12,26 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc && chmod 755 build/index.js",
     "start": "node build/index.js",
-    "dev": "tsc && node build/index.js"
+    "dev": "tsc && node build/index.js",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "database"
+    "database",
+    "cli"
   ],
   "author": "",
   "license": "ISC",
   "description": "MCP Server providing database schema and indexes",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/empowerlocal/mcp-server.git"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",
     "@types/pg": "^8.11.11",
-    "data-analyst-agent": "git+https://github.com/miltonian/data-analyst-agent.git",
     "dotenv": "^16.4.7",
-    "mcp-server": "git+https://github.com/miltonian/celp-stdio-mcp-server.git",
     "mysql2": "^3.9.3",
     "openai": "^4.96.0",
     "pg": "^8.14.1",
