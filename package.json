@@ -1,0 +1,44 @@
+{
+  "name": "mcp-server",
+  "version": "1.0.0",
+  "bin": {
+    "run": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "main": "build/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc && chmod 755 build/index.js",
+    "start": "node build/index.js",
+    "dev": "tsc && node build/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "database"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "MCP Server providing database schema and indexes",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "@types/pg": "^8.11.11",
+    "data-analyst-agent": "git+https://github.com/miltonian/data-analyst-agent.git",
+    "dotenv": "^16.4.7",
+    "mcp-server": "git+https://github.com/miltonian/celp-stdio-mcp-server.git",
+    "mysql2": "^3.9.3",
+    "openai": "^4.96.0",
+    "pg": "^8.14.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "uuid": "^11.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.14",
+    "typescript": "^5.8.2"
+  }
+}
