@@ -2,6 +2,33 @@
 
 A powerful MCP server that connects to databases and runs natural language queries through LLM planning and execution. This server understands database schema, indexes, and provides structured, accurate query results.
 
+## 📑 Table of Contents
+
+- [Security & Privacy](#-security--privacy)
+- [Claude Desktop Integration](#-claude-desktop-integration)
+- [Installation Options](#-installation-options)
+- [Environment Variables](#-environment-variables)
+- [Best Practices](#-best-practices)
+- [Key Features](#-key-features)
+- [Example Queries](#-example-queries)
+- [Multi-Schema Support](#-multi-schema-support)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+## 🔒 Security & Privacy
+
+**Your data stays private and secure:**
+
+- **Local Execution**: All database queries are executed locally on your machine
+- **No Remote Data Sharing**: Your data and query results never leave your local environment
+- **Credential Protection**: Database credentials are never transmitted to any remote servers
+- **No Data Collection**: We don't collect, store, or transmit your database structure or contents
+- **Local Processing**: All natural language to SQL transformations happen securely on your device
+- **API Key Scope**: Your API key is only used for authentication, not for data access
+
+This architecture ensures your sensitive data and database credentials remain completely private while still benefiting from powerful natural language query capabilities.
+
 ## 📋 Claude Desktop Integration
 
 **The recommended way to use this MCP server is with Claude Desktop.**
@@ -114,6 +141,18 @@ npx celp-mcp
 
 #### Method 3: Claude Desktop Configuration
 When using with Claude Desktop, set the environment variables in your Claude Desktop MCP configuration as shown in the Claude Desktop Integration section above.
+
+## 🛡️ Best Practices
+
+For optimal security when using this MCP server:
+
+1. **Create a Dedicated Read-Only Database User**: Limit the MCP server's access to read-only operations.
+
+2. **Use Environment Variables**: Never hardcode database credentials in configuration files.
+
+3. **Regular Password Rotation**: Change the read-only user's password periodically.
+
+4. **Restrict Network Access**: Configure your database to only accept connections from trusted IP addresses.
 
 ## 💡 Key Features
 
