@@ -2,6 +2,15 @@
 
 A powerful MCP server that connects to databases and runs natural language queries through LLM planning and execution. This server understands database schema, indexes, and provides structured, accurate query results.
 
+## 🛠️ Available Tools
+
+This MCP server provides Claude with the following tools:
+
+- **query-database**: Run natural language queries against your database with a focus on accuracy and detailed reasoning
+- **query-database-fast**: Run natural language queries optimized for speed and efficiency (recommended for most use cases)
+
+Each tool executes database queries locally and securely on your machine while enabling powerful natural language interactions with your data.
+
 ## 📑 Table of Contents
 
 - [Security & Privacy](#-security--privacy)
