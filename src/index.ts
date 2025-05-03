@@ -245,7 +245,7 @@ server.tool(
 );
 server.tool(
   "query-database-fast",
-  "Run queries against a database to answer user prompts, prioritizing speed to completion",
+  "Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.",
   { prompt: z.string() },
   async ({ prompt }) => {
     const cfg: DbCfg = {
