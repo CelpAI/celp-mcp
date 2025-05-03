@@ -2,9 +2,39 @@
 
 A powerful MCP server that connects to databases and runs natural language queries through LLM planning and execution. This server understands database schema, indexes, and provides structured, accurate query results.
 
-## 🚀 Quick Installation
+## 📋 Claude Desktop Integration
 
-### Using npx (Recommended)
+**The recommended way to use this MCP server is with Claude Desktop.**
+
+To integrate with Claude Desktop:
+
+1. Open Claude Desktop settings
+2. Navigate to the MCP Server configuration section
+3. Add the following configuration
+4. Set up environment variables under "env" and save the configuration
+5. Restart Claude Desktop:
+```json
+{
+  "mcpServers": {
+    "celp-mcp": {
+      "command": "npx",
+      "args": ["-y", "celp-mcp"],
+      "env": {
+        "DATABASE_HOST": "localhost",
+        "DATABASE_USER": "postgres",
+        "DATABASE_PASSWORD": "mysecretpassword",
+        "DATABASE_NAME": "mydatabase",
+        "DATABASE_TYPE": "postgres",
+        "CELP_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+## 🚀 Installation Options
+
+### Using npx (Recommended for Claude Desktop)
 
 The fastest way to get started is with npx:
 
@@ -12,7 +42,21 @@ The fastest way to get started is with npx:
 npx celp-mcp
 ```
 
-This will download and run the package without permanent installation.
+This will download and run the package without permanent installation. This method works perfectly with Claude Desktop integration.
+
+### Cloning the Repository (For Development or Customization)
+
+If you prefer to clone the repository (also works with Claude Desktop):
+
+```bash
+git clone https://github.com/empowerlocal/mcp-server.git
+cd mcp-server
+npm install
+npm run build
+npm start
+```
+
+To use with Claude Desktop when cloning the repo, adjust your Claude Desktop configuration to point to your local installation.
 
 ### Global Installation
 
@@ -23,21 +67,9 @@ npm install -g celp-mcp
 celp-mcp
 ```
 
-### Cloning the Repository
-
-For development or customization:
-
-```bash
-git clone https://github.com/empowerlocal/mcp-server.git
-cd mcp-server
-npm install
-npm run build
-npm start
-```
-
 ## 🔧 Environment Variables
 
-This server requires specific environment variables to connect to your database. Set these before running:
+This server requires specific environment variables to connect to your database. These are used both for direct execution and when configuring Claude Desktop integration:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -47,7 +79,7 @@ This server requires specific environment variables to connect to your database.
 | `DATABASE_PASSWORD` | Database password | |
 | `DATABASE_NAME` | Database/schema name | test_db |
 | `DATABASE_TYPE` | Either 'mysql' or 'postgres' | postgres |
-| `CELP_API_KEY` | **REQUIRED** API key for Celp services | |
+| `CELP_API_KEY` | API key for Celp services (contact us to obtain) | |
 | `OPENAI_API_KEY` | API key for OpenAI | |
 | `DEBUG_LOGS` | Set to 'true' for detailed logging | false |
 | `PG_DISABLE_SSL` | Set to 'true' to disable SSL for PostgreSQL | false |
@@ -56,7 +88,7 @@ This server requires specific environment variables to connect to your database.
 
 ### Setting Environment Variables
 
-#### Method 1: .env File (Recommended)
+#### Method 1: .env File (Recommended for Direct Execution)
 Create a `.env` file in your current directory with the required variables:
 
 ```
@@ -80,49 +112,8 @@ export CELP_API_KEY=your_api_key_here
 npx celp-mcp
 ```
 
-## 📋 Claude Desktop Integration
-
-To use with Claude Desktop:
-
-1. Open Claude Desktop settings
-2. Navigate to the MCP Server configuration section
-3. Add the following configuration:
-
-```json
-{
-  "mcpServers": {
-    "celp-mcp": {
-      "command": "npx",
-      "args": ["-y", "celp-mcp"]
-    }
-  }
-}
-```
-
-4. Save the configuration and restart Claude Desktop
-5. Set up environment variables in one of these ways:
-   - Create a `.env` file in your current working directory
-   - Set environment variables in your system
-   - Add them to the Claude Desktop configuration under "env"
-
-```json
-{
-  "mcpServers": {
-    "celp-mcp": {
-      "command": "npx",
-      "args": ["-y", "celp-mcp"],
-      "env": {
-        "DATABASE_HOST": "localhost",
-        "DATABASE_USER": "postgres",
-        "DATABASE_PASSWORD": "mysecretpassword",
-        "DATABASE_NAME": "mydatabase",
-        "DATABASE_TYPE": "postgres",
-        "CELP_API_KEY": "your_api_key_here"
-      }
-    }
-  }
-}
-```
+#### Method 3: Claude Desktop Configuration
+When using with Claude Desktop, set the environment variables in your Claude Desktop MCP configuration as shown in the Claude Desktop Integration section above.
 
 ## 💡 Key Features
 
@@ -159,13 +150,6 @@ If you encounter issues:
 1. **Connection Problems**: Verify database credentials and network access
 2. **Schema Discovery Issues**: Enable debug logs with `DEBUG_LOGS=true`
 3. **SSL Errors**: Try setting `PG_DISABLE_SSL=true` if your database doesn't use SSL
-
-## 📖 Advanced Configuration
-
-For advanced use cases, you can set additional environment variables:
-
-- `CELP_API_KEY`: **REQUIRED** API key for Celp services (contact us to obtain)
-- `PG_DISABLE_SSL`: Disable SSL for PostgreSQL connections
 
 ## 🤝 Contributing
 

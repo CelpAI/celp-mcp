@@ -158,6 +158,7 @@ async function loadSchema(cfg: DbCfg) {
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
 async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
   const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
+  // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
   const apiKey = process.env.CELP_API_KEY;
   const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
     auth: apiKey ? { token: apiKey } : undefined,
@@ -221,7 +222,30 @@ const server = new McpServer({
 
 server.tool(
   "query-database",
-  "Run queries against a database to answer user prompts",
+  "Run queries against a database to answer user prompts, prioritizing accuracy and reasoning",
+  { prompt: z.string() },
+  async ({ prompt }) => {
+    const cfg: DbCfg = {
+      databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+      host: process.env.DATABASE_HOST || "localhost",
+      user: process.env.DATABASE_USER || "root",
+      password: process.env.DATABASE_PASSWORD || "",
+      database: process.env.DATABASE_NAME || "test_db",
+      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+
+    try {
+      const md = await orchestrate(prompt, cfg);
+      return { content: [{ type: "text", text: md }] };
+    } catch (e: any) {
+      console.error("query-database error:", e);
+      return { content: [{ type: "text", text: `Error: ${e.message}` }] };
+    }
+  },
+);
+server.tool(
+  "query-database-fast",
+  "Run queries against a database to answer user prompts, prioritizing speed to completion",
   { prompt: z.string() },
   async ({ prompt }) => {
     const cfg: DbCfg = {
