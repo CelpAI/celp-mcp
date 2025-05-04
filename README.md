@@ -30,7 +30,6 @@ Each tool executes database queries locally and securely on your machine while e
 **Your data stays private and secure:**
 
 - **Local Execution**: All database queries are executed locally on your machine
-- **No Remote Data Sharing**: Your data and query results never leave your local environment
 - **Credential Protection**: Database credentials are never transmitted to any remote servers
 - **No Data Collection**: We don't collect, store, or transmit your database structure or contents
 - **Local Processing**: All natural language to SQL transformations happen securely on your device
