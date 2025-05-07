@@ -223,9 +223,28 @@ const server = new McpServer({
 server.tool(
   "query-database",
   "Run queries against a database to answer user prompts, prioritizing accuracy and reasoning",
-  { prompt: z.string() },
-  async ({ prompt }) => {
-    const cfg: DbCfg = {
+  { 
+    prompt: z.string(),
+    databaseConfig: z.object({
+      databaseType: z.enum(["postgres", "mysql"]),
+      host: z.string(),
+      user: z.string(),
+      password: z.string(),
+      database: z.string(),
+      port: z.number().optional(),
+      disableSSL: z.enum(["true", "false"]).optional(),
+    }).optional(),
+    celpApiKey: z.string().optional(),
+   },
+  async ({ prompt, databaseConfig, celpApiKey }) => {
+    if (databaseConfig) {
+      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+    }
+    if (celpApiKey) {
+      process.env.CELP_API_KEY = celpApiKey;
+    }
+    const cfg: DbCfg =  databaseConfig || {
       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
@@ -246,9 +265,70 @@ server.tool(
 server.tool(
   "query-database-fast",
   "Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.",
-  { prompt: z.string() },
-  async ({ prompt }) => {
-    const cfg: DbCfg = {
+  {
+    prompt: z.string(),
+    databaseConfig: z.object({
+      databaseType: z.enum(["postgres", "mysql"]),
+      host: z.string(),
+      user: z.string(),
+      password: z.string(),
+      database: z.string(),
+      port: z.number().optional(),
+      disableSSL: z.enum(["true", "false"]).optional(),
+    }).optional(),
+    celpApiKey: z.string().optional(),
+  },
+  async ({ prompt, databaseConfig, celpApiKey }) => {
+    if (databaseConfig) {
+      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+    }
+    if (celpApiKey) {
+      process.env.CELP_API_KEY = celpApiKey;
+    }
+    const cfg: DbCfg =  databaseConfig || {
+      databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+      host: process.env.DATABASE_HOST || "localhost",
+      user: process.env.DATABASE_USER || "root",
+      password: process.env.DATABASE_PASSWORD || "",
+      database: process.env.DATABASE_NAME || "test_db",
+      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+
+    try {
+      const md = await orchestrate(prompt, cfg);
+      return { content: [{ type: "text", text: md }] };
+    } catch (e: any) {
+      console.error("query-database error:", e);
+      return { content: [{ type: "text", text: `Error: ${e.message}` }] };
+    }
+  },
+);
+server.tool(
+  "query-database-turbo",
+  "Run queries against a database to answer user prompts, prioritizing speed to completion. Don't use this unless specifically preferred or requested by the user. ",
+  {
+    prompt: z.string(),
+    databaseConfig: z.object({
+      databaseType: z.enum(["postgres", "mysql"]),
+      host: z.string(),
+      user: z.string(),
+      password: z.string(),
+      database: z.string(),
+      port: z.number().optional(),
+      disableSSL: z.enum(["true", "false"]).optional(),
+    }).optional(),
+    celpApiKey: z.string().optional(),
+  },
+  async ({ prompt, databaseConfig, celpApiKey }) => {
+    if (databaseConfig) {
+      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+    }
+    if (celpApiKey) {
+      process.env.CELP_API_KEY = celpApiKey;
+    }
+    const cfg: DbCfg =  databaseConfig || {
       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
