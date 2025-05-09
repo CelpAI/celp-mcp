@@ -208,7 +208,7 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
       socket.emit("schema_info", { schemaMap, indexMap });
 
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId });
+      socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey });
     });
   });
 }
