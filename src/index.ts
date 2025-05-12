@@ -10,6 +10,7 @@ import { io, Socket } from "socket.io-client";
 import { Client as PgClient } from "pg";
 import { createConnection } from "mysql2/promise";
 import type { DefaultEventsMap } from "socket.io/dist/typed-events";
+import * as Connector from './connector';
 
 require("dotenv").config();
 
@@ -62,99 +63,6 @@ async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
   }
 }
 
-/* ── Schema loader (identical logic to reference, trimmed comments) ─── */
-async function loadSchema(cfg: DbCfg) {
-  const schemaMap: any = {};
-  const indexMap: any = {};
-
-  if (cfg.databaseType === "postgres") {
-    const client = new PgClient({
-      host: cfg.host,
-      port: cfg.port || 5432,
-      user: cfg.user,
-      password: cfg.password,
-      database: cfg.database,
-      ssl: process.env.PG_DISABLE_SSL === "true" ? undefined : { rejectUnauthorized: false },
-    });
-    await client.connect();
-    try {
-      const { rows } = await client.query(`
-        SELECT table_name,column_name,data_type,is_nullable,column_default,character_maximum_length
-        FROM information_schema.columns
-        WHERE table_schema='public'
-        ORDER BY table_name,ordinal_position
-      `);
-      rows.forEach((r: any) => {
-        if (!schemaMap[r.table_name]) schemaMap[r.table_name] = { name: r.table_name, columns: [] };
-        schemaMap[r.table_name].columns.push({
-          name: r.column_name,
-          type: r.data_type,
-          nullable: r.is_nullable === "YES",
-          defaultValue: r.column_default,
-          maxLength: r.character_maximum_length,
-        });
-      });
-
-      const { rows: idx } = await client.query(`
-        SELECT t.relname table_name,i.relname index_name,a.attname column_name,
-               ix.indisunique is_unique,ix.indisprimary is_primary
-        FROM pg_class t, pg_class i, pg_index ix, pg_attribute a
-        WHERE t.oid = ix.indrelid AND i.oid = ix.indexrelid
-          AND a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
-          AND t.relkind = 'r'
-      `);
-      idx.forEach((r: any) => {
-        const k = `${r.table_name}.${r.index_name}`;
-        if (!indexMap[k])
-          indexMap[k] = { table: r.table_name, name: r.index_name, columns: [], isUnique: r.is_unique, isPrimary: r.is_primary };
-        indexMap[k].columns.push(r.column_name);
-      });
-    } finally {
-      await client.end();
-    }
-  } else {
-    const conn = await createConnection({
-      host: cfg.host,
-      port: cfg.port || 3306,
-      user: cfg.user,
-      password: cfg.password,
-      database: cfg.database,
-    });
-    try {
-      const [cols]: any = await conn.query(`
-        SELECT TABLE_NAME,COLUMN_NAME,DATA_TYPE,IS_NULLABLE,COLUMN_DEFAULT,CHARACTER_MAXIMUM_LENGTH
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME,ORDINAL_POSITION
-      `, [cfg.database]);
-      cols.forEach((r: any) => {
-        if (!schemaMap[r.TABLE_NAME]) schemaMap[r.TABLE_NAME] = { name: r.TABLE_NAME, columns: [] };
-        schemaMap[r.TABLE_NAME].columns.push({
-          name: r.COLUMN_NAME,
-          type: r.DATA_TYPE,
-          nullable: r.IS_NULLABLE === "YES",
-          defaultValue: r.COLUMN_DEFAULT,
-          maxLength: r.CHARACTER_MAXIMUM_LENGTH,
-        });
-      });
-
-      const [idx]: any = await conn.query(`
-        SELECT TABLE_NAME,INDEX_NAME,COLUMN_NAME,NON_UNIQUE
-        FROM INFORMATION_SCHEMA.STATISTICS
-        WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME,INDEX_NAME,SEQ_IN_INDEX
-      `, [cfg.database]);
-      idx.forEach((r: any) => {
-        const k = `${r.TABLE_NAME}.${r.INDEX_NAME}`;
-        if (!indexMap[k])
-          indexMap[k] = { table: r.TABLE_NAME, name: r.INDEX_NAME, columns: [], isUnique: r.NON_UNIQUE === 0, isPrimary: r.INDEX_NAME === "PRIMARY" };
-        indexMap[k].columns.push(r.COLUMN_NAME);
-      });
-    } finally {
-      await conn.end();
-    }
-  }
-  return { schemaMap, indexMap };
-}
-
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
 async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
   const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
@@ -166,7 +74,7 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
   }); // identical to reference
 
   /* Prepare schema in the background */
-  const schemaPromise = loadSchema(cfg);
+  
 
   return new Promise<string>((resolve, reject) => {
     let finalMarkdown = "";
@@ -204,7 +112,8 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
     /* 3. after socket opens, send schema then orchestrate */
     socket.on("connect", async () => {
       log("connected", socket.id);
-      const { schemaMap, indexMap } = await schemaPromise;
+      const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
+      console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
       socket.emit("schema_info", { schemaMap, indexMap });
 
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
