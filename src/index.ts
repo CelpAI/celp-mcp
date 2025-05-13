@@ -113,7 +113,7 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
     socket.on("connect", async () => {
       log("connected", socket.id);
       const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
-      console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
+      // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
       socket.emit("schema_info", { schemaMap, indexMap });
 
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
