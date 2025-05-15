@@ -131,7 +131,7 @@ const server = new McpServer({
 
 server.tool(
   "query-database",
-  "## Purpose: Run queries against a database to answer user prompts, prioritizing accuracy and reasoning\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing accuracy and reasoning\n\n## Restrictions:\n- Don't sent database credentials in the payload, it's handled by the server.\n- Don't sent API keys in the payload, it's handled by the server.",
   { 
     prompt: z.string(),
     databaseConfig: z.object({
@@ -173,7 +173,7 @@ server.tool(
 );
 server.tool(
   "query-database-fast",
-  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.\n\n## Restrictions:\n- Don't sent database credentials in the payload, it's handled by the server.\n- Don't sent API keys in the payload, it's handled by the server.",
   {
     prompt: z.string(),
     databaseConfig: z.object({
@@ -215,7 +215,7 @@ server.tool(
 );
 server.tool(
   "query-database-turbo",
-  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Don't use this unless specifically preferred or requested by the user.\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Don't use this unless specifically preferred or requested by the user.\n\n## Restrictions:\n- Don't sent database credentials in the payload, it's handled by the server..\n- Don't sent API keys in the payload, it's handled by the server.",
   {
     prompt: z.string(),
     databaseConfig: z.object({
