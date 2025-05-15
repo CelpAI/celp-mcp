@@ -131,7 +131,7 @@ const server = new McpServer({
 
 server.tool(
   "query-database",
-  "Run queries against a database to answer user prompts, prioritizing accuracy and reasoning",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing accuracy and reasoning\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
   { 
     prompt: z.string(),
     databaseConfig: z.object({
@@ -173,7 +173,7 @@ server.tool(
 );
 server.tool(
   "query-database-fast",
-  "Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Use this for most cases instead of query-database. Unless the user prompt obviously requests a more complex analysis.\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
   {
     prompt: z.string(),
     databaseConfig: z.object({
@@ -215,7 +215,7 @@ server.tool(
 );
 server.tool(
   "query-database-turbo",
-  "Run queries against a database to answer user prompts, prioritizing speed to completion. Don't use this unless specifically preferred or requested by the user. ",
+  "## Purpose: Run queries against a database to answer user prompts, prioritizing speed to completion. Don't use this unless specifically preferred or requested by the user.\n\n## Restrictions:\n- Don't sent database credentials in the prompt.\n- Don't sent API keys in the prompt.",
   {
     prompt: z.string(),
     databaseConfig: z.object({
