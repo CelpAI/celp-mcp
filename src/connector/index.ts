@@ -181,6 +181,10 @@ export async function initMetadata(cfg: ConnectorCfg): Promise<{
   tableSizeCache: typeof tableSizeCache;
 }> {
   const inner = async () => {
+    // Reset all metadata before loading new data to prevent accumulation
+    Object.keys(schemaMap).forEach(key => delete schemaMap[key]);
+    Object.keys(indexMap).forEach(key => delete indexMap[key]);
+    Object.keys(tableSizeCache).forEach(key => delete tableSizeCache[key]);
     
     if (cfg.databaseType === 'postgres') {
       const client = new pg.Client({
