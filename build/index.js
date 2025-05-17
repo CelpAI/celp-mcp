@@ -251,7 +251,12 @@ This tool translates natural language into multi-step SQL analysis plans and exe
 - Be specific about metrics, time periods, and entities of interest
 - Include relevant business context for interpretation
 - Specify desired output format (tables, charts, insights)
-- For complex analyses, break down into logical components`, {
+- For complex analyses, break down into logical components
+
+## Restrictions:
+- Don't sent database credentials in the payload, it's handled by the server.
+- Don't sent API keys in the payload, it's handled by the server.
+`, {
     prompt: zod_1.z.string(),
     databaseConfig: zod_1.z.object({
         databaseType: zod_1.z.enum(["postgres", "mysql"]),
@@ -308,7 +313,11 @@ This tool provides a balanced approach to database analysis, maintaining good ac
 - Clearly state the specific metrics or information needed
 - Provide context about what tables or data are relevant
 - Be concise but complete in your question formulation
-- Mention any time constraints or filters that should be applied`, {
+- Mention any time constraints or filters that should be applied
+
+## Restrictions:
+- Don't sent database credentials in the payload, it's handled by the server.
+- Don't sent API keys in the payload, it's handled by the server.`, {
     prompt: zod_1.z.string(),
     databaseConfig: zod_1.z.object({
         databaseType: zod_1.z.enum(["postgres", "mysql"]),
@@ -370,7 +379,11 @@ This tool maximizes speed for quick database lookups and simple analyses, tradin
 ## Effective Prompts
 - Keep questions direct and focused on specific data points
 - Clearly specify tables or data sources when possible
-- Explicitly mention the need for speed when requesting information`, {
+- Explicitly mention the need for speed when requesting information
+
+## Restrictions:
+- Don't sent database credentials in the payload, it's handled by the server.
+- Don't sent API keys in the payload, it's handled by the server.`, {
     prompt: zod_1.z.string(),
     databaseConfig: zod_1.z.object({
         databaseType: zod_1.z.enum(["postgres", "mysql"]),
