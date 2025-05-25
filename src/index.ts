@@ -11,6 +11,7 @@ import { Client as PgClient } from "pg";
 import { createConnection } from "mysql2/promise";
 import type { DefaultEventsMap } from "socket.io/dist/typed-events";
 import * as Connector from './connector';
+import { indexMap, schemaMap } from "./connector";
 
 require("dotenv").config();
 
@@ -74,7 +75,7 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
   }); // identical to reference
 
   /* Prepare schema in the background */
-  
+
 
   return new Promise<string>((resolve, reject) => {
     let finalMarkdown = "";
@@ -245,7 +246,7 @@ This tool translates natural language into multi-step SQL analysis plans and exe
 - Don't sent database credentials in the payload, it's handled by the server.
 - Don't sent API keys in the payload, it's handled by the server.
 `,
-  { 
+  {
     prompt: z.string(),
     databaseConfig: z.object({
       databaseType: z.enum(["postgres", "mysql"]),
@@ -257,7 +258,7 @@ This tool translates natural language into multi-step SQL analysis plans and exe
       disableSSL: z.enum(["true", "false"]).optional(),
     }).optional(),
     celpApiKey: z.string().optional(),
-   },
+  },
   async ({ prompt, databaseConfig, celpApiKey }) => {
     if (databaseConfig) {
       process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
@@ -266,7 +267,7 @@ This tool translates natural language into multi-step SQL analysis plans and exe
     if (celpApiKey) {
       process.env.CELP_API_KEY = celpApiKey;
     }
-    const cfg: DbCfg =  databaseConfig || {
+    const cfg: DbCfg = databaseConfig || {
       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
@@ -331,7 +332,7 @@ This tool provides a balanced approach to database analysis, maintaining good ac
     if (celpApiKey) {
       process.env.CELP_API_KEY = celpApiKey;
     }
-    const cfg: DbCfg =  databaseConfig || {
+    const cfg: DbCfg = databaseConfig || {
       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
@@ -405,7 +406,7 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
     if (celpApiKey) {
       process.env.CELP_API_KEY = celpApiKey;
     }
-    const cfg: DbCfg =  databaseConfig || {
+    const cfg: DbCfg = databaseConfig || {
       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
@@ -429,18 +430,33 @@ server.tool(
   `
   Returns the schema map for the database.
 `,
-  {
-      schemaMap: z.any().describe("Schema map for the database"),
-  },
-  async ({ schemaMap }) => {
-      return {
-          content: [
-              {
-                  type: "text",
-                  text: JSON.stringify(schemaMap, null, 2)
-              },
-          ],
-      };
+  {databaseConfig: z.object({
+    databaseType: z.enum(["postgres", "mysql"]),
+    host: z.string(),
+    user: z.string(),
+    password: z.string(),
+    database: z.string(),
+    port: z.number().optional(),
+    disableSSL: z.enum(["true", "false"]).optional(),
+  }).optional()},
+  async ({databaseConfig}) => {
+    const cfg = databaseConfig || {
+      databaseType: "postgres",
+      host: process.env.DATABASE_HOST || "localhost",
+      user: process.env.DATABASE_USER || "root",
+      password: process.env.DATABASE_PASSWORD || "",
+      database: process.env.DATABASE_NAME || "test_db",
+      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+    const { schemaMap } = await Connector.initMetadata(cfg);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(schemaMap, null, 2)
+        },
+      ],
+    };
   }
 );
 server.tool(
@@ -448,18 +464,33 @@ server.tool(
   `
   Returns the index map for the database.
 `,
-  {
-      indexMap: z.any().describe("Index map for the database"),
-  },
-  async ({ indexMap }) => {
-      return {
-          content: [
-              {
-                  type: "text",
-                  text: JSON.stringify(indexMap, null, 2)
-              },
-          ],
-      };
+  {databaseConfig: z.object({
+    databaseType: z.enum(["postgres", "mysql"]),
+    host: z.string(),
+    user: z.string(),
+    password: z.string(),
+    database: z.string(),
+    port: z.number().optional(),
+    disableSSL: z.enum(["true", "false"]).optional(),
+  }).optional()},
+  async ({databaseConfig}) => {
+    const cfg = databaseConfig || {
+      databaseType: "postgres",
+      host: process.env.DATABASE_HOST || "localhost",
+      user: process.env.DATABASE_USER || "postgres",
+      password: process.env.DATABASE_PASSWORD || "postgres",
+      database: process.env.DATABASE_NAME || "test_db",
+      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+    const { indexMap } = await Connector.initMetadata(cfg);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(indexMap, null, 2)
+        },
+      ],
+    };
   }
 );
 

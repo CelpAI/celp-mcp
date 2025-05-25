@@ -424,9 +424,24 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
 });
 server.tool("get-schema", `
   Returns the schema map for the database.
-`, {
-    schemaMap: zod_1.z.any().describe("Schema map for the database"),
-}, async ({ schemaMap }) => {
+`, { databaseConfig: zod_1.z.object({
+        databaseType: zod_1.z.enum(["postgres", "mysql"]),
+        host: zod_1.z.string(),
+        user: zod_1.z.string(),
+        password: zod_1.z.string(),
+        database: zod_1.z.string(),
+        port: zod_1.z.number().optional(),
+        disableSSL: zod_1.z.enum(["true", "false"]).optional(),
+    }).optional() }, async ({ databaseConfig }) => {
+    const cfg = databaseConfig || {
+        databaseType: "postgres",
+        host: process.env.DATABASE_HOST || "localhost",
+        user: process.env.DATABASE_USER || "root",
+        password: process.env.DATABASE_PASSWORD || "",
+        database: process.env.DATABASE_NAME || "test_db",
+        port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+    const { schemaMap } = await Connector.initMetadata(cfg);
     return {
         content: [
             {
@@ -438,9 +453,24 @@ server.tool("get-schema", `
 });
 server.tool("get-index-map", `
   Returns the index map for the database.
-`, {
-    indexMap: zod_1.z.any().describe("Index map for the database"),
-}, async ({ indexMap }) => {
+`, { databaseConfig: zod_1.z.object({
+        databaseType: zod_1.z.enum(["postgres", "mysql"]),
+        host: zod_1.z.string(),
+        user: zod_1.z.string(),
+        password: zod_1.z.string(),
+        database: zod_1.z.string(),
+        port: zod_1.z.number().optional(),
+        disableSSL: zod_1.z.enum(["true", "false"]).optional(),
+    }).optional() }, async ({ databaseConfig }) => {
+    const cfg = databaseConfig || {
+        databaseType: "postgres",
+        host: process.env.DATABASE_HOST || "localhost",
+        user: process.env.DATABASE_USER || "postgres",
+        password: process.env.DATABASE_PASSWORD || "postgres",
+        database: process.env.DATABASE_NAME || "test_db",
+        port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    };
+    const { indexMap } = await Connector.initMetadata(cfg);
     return {
         content: [
             {
