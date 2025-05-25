@@ -307,7 +307,6 @@ This tool provides a balanced approach to database analysis, maintaining good ac
 - For typical analytical questions that don't require extensive reasoning
 - When a good balance between speed and depth is needed
 - For most standard database queries
-- This should be your default choice unless specifically needing the full reasoning of standard mode
 
 ## Effective Prompts
 - Clearly state the specific metrics or information needed
@@ -354,36 +353,39 @@ This tool provides a balanced approach to database analysis, maintaining good ac
         return { content: [{ type: "text", text: `Error: ${e.message}` }] };
     }
 });
-server.tool("query-database-turbo", `# Data Analyst Agent: Turbo Mode
+server.tool("query-database-turbo", `### **When to Use (Natural-Language Heuristics)**
 
-This tool maximizes speed for quick database lookups and simple analyses, trading depth for rapid results.
+Because the model sees only the *user’s question* and minimal schema hints, Turbo Mode should activate automatically **whenever the request exhibits every one of these surface-level cues**.  Each cue corresponds to a first-principles driver of SQL complexity that the model *can* infer without deep schema knowledge:
 
-## Capabilities
-- Quickly translates simple questions into direct SQL queries
-- Executes against databases with minimal planning overhead
-- Optimized for speed rather than comprehensive analysis
-- Returns results with basic formatting and minimal narrative
+| Signal in the User’s Question                                                                                                   | Why It Indicates Turbo Is Safe                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Single Factual Verb** — verbs like “count,” “list,” “show,” “sum,” “average,” or “max/min,” used **once**.                    | One aggregate or projection keeps the SQL to a single \`SELECT\`.                                     |
+| **At Most One Qualifier Clause** — a lone filter such as a date range, status, or simple equality (“where status = ‘active’”).  | Few filters avoid nested logic or subqueries.                                                       |
+| **No Comparative Language** — absent words like “versus,” “compare,” “trend,” “change over time,” “prior year,” “by each,” etc. | Comparisons imply multiple groupings, time windows, or self-joins.                                  |
+| **No Multi-Dimensional Grouping Phrases** — avoids “by region and product,” “per user per month,” “split across categories.”    | Multiple dimensions require complex \`GROUP BY\` and often joins.                                     |
+| **Mentions One Table-Like Concept** — either explicitly (“in \`orders\`”) or implicitly (“orders today,” “users last week”).      | Referencing several entities hints at join logic the model can’t verify quickly.                    |
+| **Requests Raw IDs or a Small Top-N List** — e.g., “give me the top 5 order IDs.”                                               | The result set will be tiny, so execution latency is dominated by query planning—not data transfer. |
+| **No Need for Explanation or Visualization** — the user asks only for the numbers or rows, not “explain why” or “graph this.”   | Generating narrative or charts costs tokens and time; Turbo avoids it.                              |
 
-## When to Use
-- Only when specifically requested by the user
-- For simple lookups or queries where speed is the primary concern
-- When basic results are sufficient without extensive analysis
-- For time-sensitive information needs
+> **Quick mental check**: *Could you answer this with a single short sentence and a single‐line SQL query template?*
+> If yes, Turbo Mode is appropriate.
 
-## Limitations
-- Less suitable for complex multi-step analyses
-- May miss nuances that would be captured in standard mode
-- Provides less detailed explanations and insights
-- May produce simpler visualizations
+---
 
-## Effective Prompts
-- Keep questions direct and focused on specific data points
-- Clearly specify tables or data sources when possible
-- Explicitly mention the need for speed when requesting information
+### Limitations
 
-## Restrictions:
-- Don't sent database credentials in the payload, it's handled by the server.
-- Don't sent API keys in the payload, it's handled by the server.`, {
+* Unsuitable for multi-step or exploratory workflows
+* May miss domain nuances captured in the standard reasoning path
+* Provides limited explanation and simplistic visuals
+
+---
+
+### Effective Prompts
+
+* “How many active users signed up last week?”
+* “List the five most expensive orders.”
+* “Show the total revenue for March 2025.”
+* “What is the average session length today?”`, {
     prompt: zod_1.z.string(),
     databaseConfig: zod_1.z.object({
         databaseType: zod_1.z.enum(["postgres", "mysql"]),
