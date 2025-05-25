@@ -420,6 +420,34 @@ This tool maximizes speed for quick database lookups and simple analyses, tradin
         return { content: [{ type: "text", text: `Error: ${e.message}` }] };
     }
 });
+server.tool("get-schema", `
+  Returns the schema map for the database.
+`, {
+    schemaMap: zod_1.z.any().describe("Schema map for the database"),
+}, async ({ schemaMap }) => {
+    return {
+        content: [
+            {
+                type: "text",
+                text: schemaMap
+            },
+        ],
+    };
+});
+server.tool("get-index-map", `
+  Returns the index map for the database.
+`, {
+    indexMap: zod_1.z.any().describe("Index map for the database"),
+}, async ({ indexMap }) => {
+    return {
+        content: [
+            {
+                type: "text",
+                text: indexMap
+            },
+        ],
+    };
+});
 (async () => {
     await server.connect(new stdio_js_1.StdioServerTransport());
 })().catch((e) => {

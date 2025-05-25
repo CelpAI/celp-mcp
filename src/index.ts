@@ -422,6 +422,45 @@ This tool maximizes speed for quick database lookups and simple analyses, tradin
   },
 );
 
+server.tool(
+  "get-schema",
+  `
+  Returns the schema map for the database.
+`,
+  {
+      schemaMap: z.any().describe("Schema map for the database"),
+  },
+  async ({ schemaMap }) => {
+      return {
+          content: [
+              {
+                  type: "text",
+                  text: schemaMap
+              },
+          ],
+      };
+  }
+);
+server.tool(
+  "get-index-map",
+  `
+  Returns the index map for the database.
+`,
+  {
+      indexMap: z.any().describe("Index map for the database"),
+  },
+  async ({ indexMap }) => {
+      return {
+          content: [
+              {
+                  type: "text",
+                  text: indexMap
+              },
+          ],
+      };
+  }
+);
+
 (async () => {
   await server.connect(new StdioServerTransport());
 })().catch((e) => {
