@@ -429,7 +429,7 @@ server.tool("get-schema", `
         content: [
             {
                 type: "text",
-                text: schemaMap
+                text: JSON.stringify(schemaMap, null, 2)
             },
         ],
     };
@@ -443,7 +443,7 @@ server.tool("get-index-map", `
         content: [
             {
                 type: "text",
-                text: indexMap
+                text: JSON.stringify(indexMap, null, 2)
             },
         ],
     };

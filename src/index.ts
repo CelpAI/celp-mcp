@@ -435,7 +435,7 @@ server.tool(
           content: [
               {
                   type: "text",
-                  text: schemaMap
+                  text: JSON.stringify(schemaMap, null, 2)
               },
           ],
       };
@@ -454,7 +454,7 @@ server.tool(
           content: [
               {
                   type: "text",
-                  text: indexMap
+                  text: JSON.stringify(indexMap, null, 2)
               },
           ],
       };
