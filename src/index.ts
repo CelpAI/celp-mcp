@@ -65,7 +65,7 @@ async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
 }
 
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
-async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
+async function orchestrate(prompt: string, cfg: DbCfg, mode: 'turbo' | 'reasoning'): Promise<string> {
   const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
   // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
   const apiKey = process.env.CELP_API_KEY;
@@ -118,7 +118,7 @@ async function orchestrate(prompt: string, cfg: DbCfg): Promise<string> {
       socket.emit("schema_info", { schemaMap, indexMap });
 
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey });
+      socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey, mode });
     });
   });
 }
@@ -277,7 +277,7 @@ This tool translates natural language into multi-step SQL analysis plans and exe
     };
 
     try {
-      const md = await orchestrate(prompt, cfg);
+      const md = await orchestrate(prompt, cfg, 'reasoning');
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -342,7 +342,7 @@ This tool provides a balanced approach to database analysis, maintaining good ac
     };
 
     try {
-      const md = await orchestrate(prompt, cfg);
+      const md = await orchestrate(prompt, cfg, 'reasoning');
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -416,7 +416,7 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
     };
 
     try {
-      const md = await orchestrate(prompt, cfg);
+      const md = await orchestrate(prompt, cfg, 'turbo');
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);

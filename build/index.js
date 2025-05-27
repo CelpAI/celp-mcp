@@ -85,7 +85,7 @@ async function runQuery(cfg, sql, params = []) {
     }
 }
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
-async function orchestrate(prompt, cfg) {
+async function orchestrate(prompt, cfg, mode) {
     const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
     // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
     const apiKey = process.env.CELP_API_KEY;
@@ -133,7 +133,7 @@ async function orchestrate(prompt, cfg) {
             // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
             socket.emit("schema_info", { schemaMap, indexMap });
             const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey });
+            socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey, mode });
         });
     });
 }
@@ -285,7 +285,7 @@ This tool translates natural language into multi-step SQL analysis plans and exe
         port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     };
     try {
-        const md = await orchestrate(prompt, cfg);
+        const md = await orchestrate(prompt, cfg, 'reasoning');
         return { content: [{ type: "text", text: md }] };
     }
     catch (e) {
@@ -345,7 +345,7 @@ This tool provides a balanced approach to database analysis, maintaining good ac
         port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     };
     try {
-        const md = await orchestrate(prompt, cfg);
+        const md = await orchestrate(prompt, cfg, 'reasoning');
         return { content: [{ type: "text", text: md }] };
     }
     catch (e) {
@@ -414,7 +414,7 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
         port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     };
     try {
-        const md = await orchestrate(prompt, cfg);
+        const md = await orchestrate(prompt, cfg, 'turbo');
         return { content: [{ type: "text", text: md }] };
     }
     catch (e) {
