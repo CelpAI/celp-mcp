@@ -11,7 +11,7 @@ import { Client as PgClient } from "pg";
 import { createConnection } from "mysql2/promise";
 import type { DefaultEventsMap } from "socket.io/dist/typed-events";
 import * as Connector from './connector';
-import { indexMap, schemaMap } from "./connector";
+import { ConnectorCfg, indexMap, schemaMap } from "./connector";
 
 require("dotenv").config();
 
@@ -30,7 +30,7 @@ const DEBUG = process.env.DEBUG_LOGS === "true";
 const log = (...a: any[]) => DEBUG && console.log(...a);
 
 /* ── DB query executor (unchanged from reference) ───────────────────── */
-async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
+export async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
   if (cfg.databaseType === "postgres") {
     const client = new PgClient({
       host: cfg.host,
@@ -65,9 +65,9 @@ async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
 }
 
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
-async function orchestrate(prompt: string, cfg: DbCfg, mode: 'turbo' | 'reasoning'): Promise<string> {
-  const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
-  // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+export async function orchestrate(prompt: string, cfg?: DbCfg, mode: 'turbo' | 'reasoning' = 'turbo', databaseConnectionId?: string): Promise<string> {
+  // const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
+  const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
   const apiKey = process.env.CELP_API_KEY;
   const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
     auth: apiKey ? { token: apiKey } : undefined,
@@ -89,6 +89,9 @@ async function orchestrate(prompt: string, cfg: DbCfg, mode: 'turbo' | 'reasonin
     socket.on("query_request", async ({ queryId, sql, params }) => {
       log("query_request", queryId);
       try {
+        if (!cfg) {
+          throw new Error("No database configuration provided");
+        }
         const result = await runQuery(cfg, sql, params);
         socket.emit("query_result", { queryId, result });
       } catch (e: any) {
@@ -113,12 +116,18 @@ async function orchestrate(prompt: string, cfg: DbCfg, mode: 'turbo' | 'reasonin
     /* 3. after socket opens, send schema then orchestrate */
     socket.on("connect", async () => {
       log("connected", socket.id);
-      const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
-      // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
-      socket.emit("schema_info", { schemaMap, indexMap });
+      if (cfg && !databaseConnectionId) {
+        const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
+        // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
+        socket.emit("schema_info", { schemaMap, indexMap });
+      }else {
+        socket.emit("schema_info", { databaseConnectionId });
+      }
+
 
       const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      socket.emit("orchestrate", { prompt, databaseType: cfg.databaseType, requestId, apiKey, mode });
+      // resolve(JSON.stringify({ prompt, databaseType: cfg?.databaseType, requestId, apiKey, mode, databaseConnectionId }));
+      socket.emit("orchestrate", { prompt, databaseType: cfg?.databaseType, requestId, apiKey, mode, databaseConnectionId });
     });
   });
 }
@@ -220,9 +229,9 @@ This tool excels at answering specific analytical questions about data by handli
 
 server.tool(
   "query-database",
-  `# Data Analyst Agent: Standard Analysis Mode
+  `# Data Analyst Agent: Reasoning Analysis Mode
 
-This tool translates natural language into multi-step SQL analysis plans and executes them against databases. Use this for complex analytical questions requiring deep reasoning.
+This tool translates natural language into multi-step SQL analysis plans and executes them against databases. Use this for complex analytical questions requiring more reasoning.
 
 ## Capabilities
 - Performs multi-step analyses with each step building on previous results
@@ -249,11 +258,11 @@ This tool translates natural language into multi-step SQL analysis plans and exe
   {
     prompt: z.string(),
     databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]),
-      host: z.string(),
-      user: z.string(),
-      password: z.string(),
-      database: z.string(),
+      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      host: z.string().optional(),
+      user: z.string().optional(),
+      password: z.string().optional(),
+      database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
     }).optional(),
@@ -267,82 +276,29 @@ This tool translates natural language into multi-step SQL analysis plans and exe
     if (celpApiKey) {
       process.env.CELP_API_KEY = celpApiKey;
     }
-    const cfg: DbCfg = databaseConfig || {
-      databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-      host: process.env.DATABASE_HOST || "localhost",
-      user: process.env.DATABASE_USER || "root",
-      password: process.env.DATABASE_PASSWORD || "",
-      database: process.env.DATABASE_NAME || "test_db",
-      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-    };
-
-    try {
-      const md = await orchestrate(prompt, cfg, 'reasoning');
-      return { content: [{ type: "text", text: md }] };
-    } catch (e: any) {
-      console.error("query-database error:", e);
-      return { content: [{ type: "text", text: `Error: ${e.message}` }] };
-    }
-  },
-);
-server.tool(
-  "query-database-fast",
-  `# Data Analyst Agent: Balanced Mode
-
-This tool provides a balanced approach to database analysis, maintaining good accuracy while completing queries faster than the standard mode.
-
-## Capabilities
-- Translates natural language to optimized SQL queries
-- Balances between depth of analysis and speed of execution
-- Can handle moderately complex analytical questions
-- Produces concise markdown reports with key insights
-
-## When to Use
-- For typical analytical questions that don't require extensive reasoning
-- When a good balance between speed and depth is needed
-- For most standard database queries
-
-## Effective Prompts
-- Clearly state the specific metrics or information needed
-- Provide context about what tables or data are relevant
-- Be concise but complete in your question formulation
-- Mention any time constraints or filters that should be applied
-
-## Restrictions:
-- Don't sent database credentials in the payload, it's handled by the server.
-- Don't sent API keys in the payload, it's handled by the server.`,
-  {
-    prompt: z.string(),
-    databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]),
-      host: z.string(),
-      user: z.string(),
-      password: z.string(),
-      database: z.string(),
-      port: z.number().optional(),
-      disableSSL: z.enum(["true", "false"]).optional(),
-    }).optional(),
-    celpApiKey: z.string().optional(),
-  },
-  async ({ prompt, databaseConfig, celpApiKey }) => {
+    let cfg: DbCfg;
     if (databaseConfig) {
-      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
-      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+      cfg = {
+        databaseType: databaseConfig.databaseType as DbType,
+        host: databaseConfig.host || "localhost",
+        user: databaseConfig.user || "root",
+        password: databaseConfig.password || "",
+        database: databaseConfig.database || "test_db",
+        port: databaseConfig.port,
+      };
+    } else {
+      cfg = {
+        databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+        host: process.env.DATABASE_HOST || "localhost",
+        user: process.env.DATABASE_USER || "root",
+        password: process.env.DATABASE_PASSWORD || "",
+        database: process.env.DATABASE_NAME || "test_db",
+        port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+      };
     }
-    if (celpApiKey) {
-      process.env.CELP_API_KEY = celpApiKey;
-    }
-    const cfg: DbCfg = databaseConfig || {
-      databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-      host: process.env.DATABASE_HOST || "localhost",
-      user: process.env.DATABASE_USER || "root",
-      password: process.env.DATABASE_PASSWORD || "",
-      database: process.env.DATABASE_NAME || "test_db",
-      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-    };
 
     try {
-      const md = await orchestrate(prompt, cfg, 'reasoning');
+      const md = await orchestrate(prompt, cfg, 'reasoning', process.env.DATABASE_CONNECTION_ID);
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -350,6 +306,71 @@ This tool provides a balanced approach to database analysis, maintaining good ac
     }
   },
 );
+// server.tool(
+//   "query-database-fast",
+//   `# Data Analyst Agent: Balanced Mode
+
+// This tool provides a balanced approach to database analysis, maintaining good accuracy while completing queries faster than the standard mode.
+
+// ## Capabilities
+// - Translates natural language to optimized SQL queries
+// - Balances between depth of analysis and speed of execution
+// - Can handle moderately complex analytical questions
+// - Produces concise markdown reports with key insights
+
+// ## When to Use
+// - For typical analytical questions that don't require extensive reasoning
+// - When a good balance between speed and depth is needed
+// - For most standard database queries
+
+// ## Effective Prompts
+// - Clearly state the specific metrics or information needed
+// - Provide context about what tables or data are relevant
+// - Be concise but complete in your question formulation
+// - Mention any time constraints or filters that should be applied
+
+// ## Restrictions:
+// - Don't sent database credentials in the payload, it's handled by the server.
+// - Don't sent API keys in the payload, it's handled by the server.`,
+//   {
+//     prompt: z.string(),
+//     databaseConfig: z.object({
+//       databaseType: z.enum(["postgres", "mysql"]),
+//       host: z.string(),
+//       user: z.string(),
+//       password: z.string(),
+//       database: z.string(),
+//       port: z.number().optional(),
+//       disableSSL: z.enum(["true", "false"]).optional(),
+//     }).optional(),
+//     celpApiKey: z.string().optional(),
+//   },
+//   async ({ prompt, databaseConfig, celpApiKey }) => {
+//     if (databaseConfig) {
+//       process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+//       process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+//     }
+//     if (celpApiKey) {
+//       process.env.CELP_API_KEY = celpApiKey;
+//     }
+//     const cfg: DbCfg = databaseConfig || {
+//       databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+//       host: process.env.DATABASE_HOST || "localhost",
+//       user: process.env.DATABASE_USER || "root",
+//       password: process.env.DATABASE_PASSWORD || "",
+//       database: process.env.DATABASE_NAME || "test_db",
+//       port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+//     };
+
+//     try {
+//       const md = await orchestrate(prompt, cfg, 'reasoning');
+//       return { content: [{ type: "text", text: md }] };
+//     } catch (e: any) {
+//       console.error("query-database error:", e);
+//       return { content: [{ type: "text", text: `Error: ${e.message}` }] };
+//     }
+//   },
+// );
 server.tool(
   "query-database-turbo",
   `### **When to Use (Natural-Language Heuristics)**
@@ -388,17 +409,20 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
   {
     prompt: z.string(),
     databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]),
-      host: z.string(),
-      user: z.string(),
-      password: z.string(),
-      database: z.string(),
+      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      host: z.string().optional(),
+      user: z.string().optional(),
+      password: z.string().optional(),
+      database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
     }).optional(),
+    databaseConnectionId: z.string().optional(),
     celpApiKey: z.string().optional(),
   },
-  async ({ prompt, databaseConfig, celpApiKey }) => {
+  async (args) => {
+    const { prompt, databaseConfig, databaseConnectionId, celpApiKey } = args;
+    console.log({args})
     if (databaseConfig) {
       process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
       process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
@@ -406,17 +430,32 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
     if (celpApiKey) {
       process.env.CELP_API_KEY = celpApiKey;
     }
-    const cfg: DbCfg = databaseConfig || {
-      databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-      host: process.env.DATABASE_HOST || "localhost",
-      user: process.env.DATABASE_USER || "root",
-      password: process.env.DATABASE_PASSWORD || "",
-      database: process.env.DATABASE_NAME || "test_db",
-      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-    };
+    if (databaseConnectionId) {
+      process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
+    }
+    let cfg: DbCfg | undefined;
+    if (databaseConfig) {
+      cfg = {
+        databaseType: databaseConfig.databaseType as DbType,
+        host: databaseConfig.host || "localhost",
+        user: databaseConfig.user || "root",
+        password: databaseConfig.password || "",
+        database: databaseConfig.database || "test_db",
+        port: databaseConfig.port,
+      };
+    } 
+
+    // const cfg: DbCfg = databaseConfig || {
+    //   databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+    //   host: process.env.DATABASE_HOST || "localhost",
+    //   user: process.env.DATABASE_USER || "root",
+    //   password: process.env.DATABASE_PASSWORD || "",
+    //   database: process.env.DATABASE_NAME || "test_db",
+    // port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    // };
 
     try {
-      const md = await orchestrate(prompt, cfg, 'turbo');
+      const md = await orchestrate(prompt, process.env.DATABASE_CONNECTION_ID ? undefined : cfg, 'turbo', process.env.DATABASE_CONNECTION_ID);
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -428,19 +467,67 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
 server.tool(
   "get-schema",
   `
-  Returns the schema map for the database.
+  Returns the schema map for the database. Only use this tool after previous attempts fail, or when specifically requested
 `,
-  {databaseConfig: z.object({
-    databaseType: z.enum(["postgres", "mysql"]),
-    host: z.string(),
-    user: z.string(),
-    password: z.string(),
-    database: z.string(),
-    port: z.number().optional(),
-    disableSSL: z.enum(["true", "false"]).optional(),
-  }).optional()},
-  async ({databaseConfig}) => {
-    const cfg = databaseConfig || {
+  {
+    databaseConfig: z.object({
+      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      host: z.string().optional(),
+      user: z.string().optional(),
+      password: z.string().optional(),
+      database: z.string().optional(),
+      port: z.number().optional(),
+      disableSSL: z.enum(["true", "false"]).optional(),
+    }).optional()
+  },
+  async (args, ctx) => {
+    // console.log({args, ctx})
+    console.log('attempting to get schema for')
+    // if (process.env.CELP_API_KEY) {
+    //   console.log('CELP_API_KEY2', process.env.CELP_API_KEY);
+    //   console.log('DATABASE_CONNECTION_ID', process.env.DATABASE_CONNECTION_ID);
+    //   process.exit(0);
+    // }
+    if(/*!cfg.host && */process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID){
+    // Proxy to streaming API when using remote database connection
+    const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+    const apiKey = process.env.CELP_API_KEY;
+    const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
+      auth: apiKey ? { token: apiKey } : undefined,
+      extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    });
+
+    return new Promise((resolve, reject) => {
+      socket.on("connect_error", (e) => {
+        socket.disconnect();
+        reject(new Error(`Socket error: ${e.message}`));
+      });
+
+      socket.on("schema_map_result", ({ schemaMap, error }) => {
+        socket.disconnect();
+        if (error) {
+          reject(new Error(error));
+        } else {
+          resolve({
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(schemaMap, null, 2)
+              },
+            ],
+          });
+        }
+      });
+
+      socket.on("connect", () => {
+        socket.emit("get_schema_map", {
+          databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
+          apiKey
+        });
+      });
+    });
+    }
+    const cfg = args.databaseConfig || {
       databaseType: "postgres",
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
@@ -448,7 +535,7 @@ server.tool(
       database: process.env.DATABASE_NAME || "test_db",
       port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     };
-    const { schemaMap } = await Connector.initMetadata(cfg);
+    const { schemaMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
       content: [
         {
@@ -459,21 +546,103 @@ server.tool(
     };
   }
 );
+
 server.tool(
   "get-index-map",
   `
-  Returns the index map for the database.
+  Returns the index map for the database. Only use this tool after previous attempts fail, or when specifically requested
 `,
-  {databaseConfig: z.object({
-    databaseType: z.enum(["postgres", "mysql"]),
-    host: z.string(),
-    user: z.string(),
-    password: z.string(),
-    database: z.string(),
-    port: z.number().optional(),
-    disableSSL: z.enum(["true", "false"]).optional(),
-  }).optional()},
-  async ({databaseConfig}) => {
+  {
+    databaseConfig: z.object({
+      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      host: z.string().optional(),
+      user: z.string().optional(),
+      password: z.string().optional(),
+      database: z.string().optional(),
+      port: z.number().optional(),
+      disableSSL: z.enum(["true", "false"]).optional(),
+    }).optional()
+  },
+  async ({ databaseConfig }) => {
+    console.log('attempting to get index map for')
+    if(process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID){
+      const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+      const apiKey = process.env.CELP_API_KEY;
+      const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
+        auth: apiKey ? { token: apiKey } : undefined,
+        extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      });
+
+      return new Promise((resolve, reject) => {
+        socket.on("connect_error", (e) => {
+          socket.disconnect();
+          reject(new Error(`Socket error: ${e.message}`));
+        });
+
+        socket.on("index_map_result", ({ indexMap, error }) => {
+          socket.disconnect();
+          if (error) {
+            reject(new Error(error));
+          } else {
+            resolve({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(indexMap, null, 2)
+                },
+              ],
+            });
+          }
+        });
+
+        socket.on("connect", () => {
+          socket.emit("get_index_map", {
+            databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
+            apiKey
+          });
+        });
+      });
+    }
+
+    if (process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID) {
+      // Proxy to streaming API when using remote database connection
+      const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+      const apiKey = process.env.CELP_API_KEY;
+      const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
+        auth: apiKey ? { token: apiKey } : undefined,
+        extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      });
+
+      return new Promise((resolve, reject) => {
+        socket.on("connect_error", (e) => {
+          socket.disconnect();
+          reject(new Error(`Socket error: ${e.message}`));
+        });
+
+        socket.on("index_map_result", ({ indexMap, error }) => {
+          socket.disconnect();
+          if (error) {
+            reject(new Error(error));
+          } else {
+            resolve({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(indexMap, null, 2)
+                },
+              ],
+            });
+          }
+        });
+
+        socket.on("connect", () => {
+          socket.emit("get_index_map", {
+            databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
+            apiKey
+          });
+        });
+      });
+    }
     const cfg = databaseConfig || {
       databaseType: "postgres",
       host: process.env.DATABASE_HOST || "localhost",
@@ -482,7 +651,7 @@ server.tool(
       database: process.env.DATABASE_NAME || "test_db",
       port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     };
-    const { indexMap } = await Connector.initMetadata(cfg);
+    const { indexMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
       content: [
         {
