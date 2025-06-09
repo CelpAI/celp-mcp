@@ -27,7 +27,7 @@ export class StreamingDatabaseClient {
    */
   constructor(baseUrl: string, apiKey: string) {
     this.baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    this.apiKey = apiKey || process.env.CELP_API_KEY || '';
+    this.apiKey = apiKey;
   }
 
   /**

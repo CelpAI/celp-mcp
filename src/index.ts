@@ -65,10 +65,10 @@ export async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
 }
 
 /* ── Single orchestration roundtrip ─────────────────────────────────── */
-export async function orchestrate(prompt: string, cfg?: DbCfg, mode: 'turbo' | 'reasoning' = 'turbo', databaseConnectionId?: string): Promise<string> {
-  // const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
-  const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
-  const apiKey = process.env.CELP_API_KEY;
+export async function orchestrate(prompt: string, apiKey: string, databaseConnectionId?: string, cfg?: DbCfg, mode: 'turbo' | 'reasoning'='turbo'): Promise<string> {
+  const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
+  // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+  // const apiKey = apiKey || process.env.CELP_API_KEY;
   const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
     auth: apiKey ? { token: apiKey } : undefined,
     extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
@@ -88,10 +88,11 @@ export async function orchestrate(prompt: string, cfg?: DbCfg, mode: 'turbo' | '
     /* 1. handle DB query requests */
     socket.on("query_request", async ({ queryId, sql, params }) => {
       log("query_request", queryId);
+      if (!cfg) {
+        socket.emit("query_result", { queryId, error: "No database configuration provided" });
+        return;
+      }
       try {
-        if (!cfg) {
-          throw new Error("No database configuration provided");
-        }
         const result = await runQuery(cfg, sql, params);
         socket.emit("query_result", { queryId, result });
       } catch (e: any) {
@@ -116,11 +117,11 @@ export async function orchestrate(prompt: string, cfg?: DbCfg, mode: 'turbo' | '
     /* 3. after socket opens, send schema then orchestrate */
     socket.on("connect", async () => {
       log("connected", socket.id);
-      if (cfg && !databaseConnectionId) {
+      if (!databaseConnectionId && cfg) {
         const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
         // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
         socket.emit("schema_info", { schemaMap, indexMap });
-      }else {
+      } else {
         socket.emit("schema_info", { databaseConnectionId });
       }
 
@@ -267,17 +268,25 @@ This tool translates natural language into multi-step SQL analysis plans and exe
       disableSSL: z.enum(["true", "false"]).optional(),
     }).optional(),
     celpApiKey: z.string().optional(),
+    databaseConnectionId: z.string().optional(),
   },
-  async ({ prompt, databaseConfig, celpApiKey }) => {
-    if (databaseConfig) {
-      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
-      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
-    }
-    if (celpApiKey) {
-      process.env.CELP_API_KEY = celpApiKey;
-    }
-    let cfg: DbCfg;
-    if (databaseConfig) {
+  async (args) => {
+    const { prompt, databaseConfig, databaseConnectionId, celpApiKey } = args;
+    // console.log({args})
+    // if (process.env.DONT_USE_DB_ENVS !== "true") {
+    //   if (databaseConfig) {
+    //     process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+    //     process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+    //   }
+    //   if (celpApiKey) {
+    //     process.env.CELP_API_KEY = celpApiKey;
+    //   }
+    //   if (databaseConnectionId) {
+    //     process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
+    //   }
+    // }
+    let cfg: DbCfg | undefined;
+    if (databaseConfig && process.env.DONT_USE_DB_ENVS === "true") {
       cfg = {
         databaseType: databaseConfig.databaseType as DbType,
         host: databaseConfig.host || "localhost",
@@ -287,18 +296,32 @@ This tool translates natural language into multi-step SQL analysis plans and exe
         port: databaseConfig.port,
       };
     } else {
-      cfg = {
-        databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-        host: process.env.DATABASE_HOST || "localhost",
-        user: process.env.DATABASE_USER || "root",
-        password: process.env.DATABASE_PASSWORD || "",
-        database: process.env.DATABASE_NAME || "test_db",
-        port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-      };
+      if (process.env.DONT_USE_DB_ENVS !== "true") {
+        cfg = {
+          databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+          host: process.env.DATABASE_HOST || "localhost",
+          user: process.env.DATABASE_USER || "root",
+          password: process.env.DATABASE_PASSWORD || "",
+          database: process.env.DATABASE_NAME || "test_db",
+          port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+        };
+      }
     }
 
+    // const cfg: DbCfg = databaseConfig || {
+    //   databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+    //   host: process.env.DATABASE_HOST || "localhost",
+    //   user: process.env.DATABASE_USER || "root",
+    //   password: process.env.DATABASE_PASSWORD || "",
+    //   database: process.env.DATABASE_NAME || "test_db",
+    // port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+    // };
+
+    if ((process.env.DONT_USE_DB_ENVS === "true" && !celpApiKey) || (process.env.DONT_USE_DB_ENVS !== "true" && !process.env.CELP_API_KEY)) {
+      throw new Error("No API key provided");
+    }
     try {
-      const md = await orchestrate(prompt, cfg, 'reasoning', process.env.DATABASE_CONNECTION_ID);
+      const md = await orchestrate(prompt, process.env.DONT_USE_DB_ENVS === "true" ? celpApiKey! : process.env.CELP_API_KEY!, databaseConnectionId, cfg, 'reasoning');
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -422,19 +445,21 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
   },
   async (args) => {
     const { prompt, databaseConfig, databaseConnectionId, celpApiKey } = args;
-    console.log({args})
-    if (databaseConfig) {
-      process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
-      process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
-    }
-    if (celpApiKey) {
-      process.env.CELP_API_KEY = celpApiKey;
-    }
-    if (databaseConnectionId) {
-      process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
-    }
+    // console.log({args})
+    // if (process.env.DONT_USE_DB_ENVS !== "true") {
+    //   if (databaseConfig) {
+    //     process.env.PG_DISABLE_SSL = databaseConfig.disableSSL === "true" ? "true" : "false";
+    //     process.env.MYSQL_SSL = databaseConfig.disableSSL === "true" ? "false" : "true";
+    //   }
+    //   if (celpApiKey) {
+    //     process.env.CELP_API_KEY = celpApiKey;
+    //   }
+    //   if (databaseConnectionId) {
+    //     process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
+    //   }
+    // }
     let cfg: DbCfg | undefined;
-    if (databaseConfig) {
+    if (databaseConfig && process.env.DONT_USE_DB_ENVS === "true") {
       cfg = {
         databaseType: databaseConfig.databaseType as DbType,
         host: databaseConfig.host || "localhost",
@@ -443,7 +468,18 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
         database: databaseConfig.database || "test_db",
         port: databaseConfig.port,
       };
-    } 
+    } else {
+      if (process.env.DONT_USE_DB_ENVS !== "true") {
+        cfg = {
+          databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
+          host: process.env.DATABASE_HOST || "localhost",
+          user: process.env.DATABASE_USER || "root",
+          password: process.env.DATABASE_PASSWORD || "",
+          database: process.env.DATABASE_NAME || "test_db",
+          port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+        };
+      }
+    }
 
     // const cfg: DbCfg = databaseConfig || {
     //   databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
@@ -454,8 +490,11 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
     // port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
     // };
 
+    if ((process.env.DONT_USE_DB_ENVS === "true" && !celpApiKey) || (process.env.DONT_USE_DB_ENVS !== "true" && !process.env.CELP_API_KEY)) {
+      throw new Error("No API key provided");
+    }
     try {
-      const md = await orchestrate(prompt, process.env.DATABASE_CONNECTION_ID ? undefined : cfg, 'turbo', process.env.DATABASE_CONNECTION_ID);
+      const md = await orchestrate(prompt, process.env.DONT_USE_DB_ENVS === "true" ? celpApiKey! : process.env.CELP_API_KEY!, databaseConnectionId, cfg, 'turbo');
       return { content: [{ type: "text", text: md }] };
     } catch (e: any) {
       console.error("query-database error:", e);
@@ -478,63 +517,66 @@ server.tool(
       database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
-    }).optional()
+    }).optional(),
+    apiKey: z.string().optional(),
+    databaseConnectionId: z.string().optional(),
   },
-  async (args, ctx) => {
+  async ({ databaseConfig, apiKey, databaseConnectionId }) => {
     // console.log({args, ctx})
-    console.log('attempting to get schema for')
+    // console.log('attempting to get schema for')
     // if (process.env.CELP_API_KEY) {
     //   console.log('CELP_API_KEY2', process.env.CELP_API_KEY);
     //   console.log('DATABASE_CONNECTION_ID', process.env.DATABASE_CONNECTION_ID);
     //   process.exit(0);
     // }
-    if(/*!cfg.host && */process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID){
-    // Proxy to streaming API when using remote database connection
-    const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
-    const apiKey = process.env.CELP_API_KEY;
-    const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
-      auth: apiKey ? { token: apiKey } : undefined,
-      extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
-    });
+    if (apiKey && databaseConnectionId) {
+      // Proxy to streaming API when using remote database connection
+      // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+        const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
 
-    return new Promise((resolve, reject) => {
-      socket.on("connect_error", (e) => {
-        socket.disconnect();
-        reject(new Error(`Socket error: ${e.message}`));
+      const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
+        auth: apiKey ? { token: apiKey } : undefined,
+        extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
       });
 
-      socket.on("schema_map_result", ({ schemaMap, error }) => {
-        socket.disconnect();
-        if (error) {
-          reject(new Error(error));
-        } else {
-          resolve({
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(schemaMap, null, 2)
-              },
-            ],
+      return new Promise((resolve, reject) => {
+        socket.on("connect_error", (e) => {
+          socket.disconnect();
+          reject(new Error(`Socket error: ${e.message}`));
+        });
+
+        socket.on("schema_map_result", ({ schemaMap, error }) => {
+          socket.disconnect();
+          if (error) {
+            reject(new Error(error));
+          } else {
+            resolve({
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(schemaMap, null, 2)
+                },
+              ],
+            });
+          }
+        });
+
+        socket.on("connect", () => {
+          socket.emit("get_schema_map", {
+            databaseConnectionId,
+            apiKey
           });
-        }
-      });
-
-      socket.on("connect", () => {
-        socket.emit("get_schema_map", {
-          databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
-          apiKey
         });
       });
-    });
     }
-    const cfg = args.databaseConfig || {
-      databaseType: "postgres",
+    const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
+      databaseType: process.env.DATABASE_TYPE as DbType,
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "root",
       password: process.env.DATABASE_PASSWORD || "",
       database: process.env.DATABASE_NAME || "test_db",
       port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-    };
+    } : undefined;
     const { schemaMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
       content: [
@@ -561,13 +603,16 @@ server.tool(
       database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
-    }).optional()
+    }).optional(),
+    apiKey: z.string().optional(),
+    databaseConnectionId: z.string().optional(),
   },
-  async ({ databaseConfig }) => {
-    console.log('attempting to get index map for')
-    if(process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID){
-      const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
-      const apiKey = process.env.CELP_API_KEY;
+  async ({ databaseConfig, apiKey, databaseConnectionId }) => {
+    // console.log('attempting to get index map for')
+    if (apiKey && databaseConnectionId) {
+      // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+        const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
+
       const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
         auth: apiKey ? { token: apiKey } : undefined,
         extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
@@ -597,17 +642,18 @@ server.tool(
 
         socket.on("connect", () => {
           socket.emit("get_index_map", {
-            databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
+            databaseConnectionId,
             apiKey
           });
         });
       });
     }
 
-    if (process.env.CELP_API_KEY && process.env.DATABASE_CONNECTION_ID) {
+    if (apiKey && databaseConnectionId) {
       // Proxy to streaming API when using remote database connection
-      const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
-      const apiKey = process.env.CELP_API_KEY;
+      // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
+        const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
+
       const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
         auth: apiKey ? { token: apiKey } : undefined,
         extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
@@ -637,20 +683,20 @@ server.tool(
 
         socket.on("connect", () => {
           socket.emit("get_index_map", {
-            databaseConnectionId: process.env.DATABASE_CONNECTION_ID,
+            databaseConnectionId,
             apiKey
           });
         });
       });
     }
-    const cfg = databaseConfig || {
-      databaseType: "postgres",
+    const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
+      databaseType: process.env.DATABASE_TYPE as DbType,
       host: process.env.DATABASE_HOST || "localhost",
       user: process.env.DATABASE_USER || "postgres",
       password: process.env.DATABASE_PASSWORD || "postgres",
       database: process.env.DATABASE_NAME || "test_db",
       port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-    };
+    } : undefined;
     const { indexMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
       content: [

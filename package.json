@@ -1,6 +1,6 @@
 {
   "name": "celp-mcp",
-  "version": "1.0.25",
+  "version": "1.0.40",
   "bin": {
     "celp-mcp": "./build/index.js",
     "celp": "./build/index.js"
