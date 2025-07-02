@@ -27,11 +27,11 @@
     "cli"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "description": "MCP Server providing database schema and indexes",
   "repository": {
     "type": "git",
-    "url": "https://github.com/empowerlocal/mcp-server.git"
+    "url": "https://github.com/CelpAI/mcp-server.git"
   },
   "dependencies": {
     "@databricks/sql": "^1.11.0",

@@ -1,207 +1,322 @@
-# Celp MCP
+# Celp-MCP – Database & Analytics Server for the Model-Context-Protocol
 
-A powerful MCP server that connects to databases and runs natural language queries through LLM planning and execution. This server understands database schema, indexes, and provides structured, accurate query results.
+> **TL;DR for LLMs**  
+> *Connect via MCP **stdio** transport, call `initialize`, then use one of the four tools described below.*  
+> Tools are **idempotent** and expect *structured JSON* arguments – never place credentials inside the `prompt` field.
 
-## 🛠️ Available Tools
+---
 
-This MCP server provides Claude with the following tools:
+## 1&nbsp;•&nbsp;What this server does
 
-- **query-database**: Run natural language queries against your database with a focus on accuracy and detailed reasoning
-- **query-database-fast**: Run natural language queries optimized for speed and efficiency (recommended for most use cases)
+`celp-mcp` exposes **natural-language analytics over SQL, MongoDB and Databricks** warehouses to any **MCP-compatible client**.  
+Internally it hosts a light agent that
 
-Each tool executes database queries locally and securely on your machine while enabling powerful natural language interactions with your data.
+1. maps NL questions → multi-step SQL / Mongo / Spark plans,  
+2. executes those plans locally against the database (no data leaves the machine), and  
+3. streams back **markdown reports** with tables, charts and findings.
 
-## 📑 Table of Contents
+The server follows the **Model-Context-Protocol (MCP)** 2025-03-26 spec and ships with the standard **stdio transport**.  
+No network sockets are opened unless you start the optional remote streaming helper.
 
-- [Security & Privacy](#-security--privacy)
-- [Claude Desktop Integration](#-claude-desktop-integration)
-- [Installation Options](#-installation-options)
-- [Environment Variables](#-environment-variables)
-- [Best Practices](#-best-practices)
-- [Key Features](#-key-features)
-- [Example Queries](#-example-queries)
-- [Multi-Schema Support](#-multi-schema-support)
-- [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
-- [License](#-license)
+---
 
-## 🔒 Security & Privacy
+## 2&nbsp;•&nbsp;Exposed MCP tools
 
-**Your data stays private and secure:**
+| Name | Purpose | Speed vs Reasoning | Required params |
+|------|---------|--------------------|-----------------|
+| `query-database` | High-fidelity multi-step analysis | ⭐ Accuracy | `prompt` *(string)*, optional `databaseConfig`, `databaseConnectionId`, `celpApiKey` |
+| `query-database-turbo` | One-shot, single-query path | ⚡ Speed | same as above |
+| `get-schema` | Return **schema map** the agent would use | – | same as above (all optional) |
+| `get-index-map` | Return **index / key map** for optimisation | – | same as above (all optional) |
 
-- **Local Execution**: All database queries are executed locally on your machine
-- **Credential Protection**: Database credentials are never transmitted to any remote servers
-- **No Data Collection**: We don't collect, store, or transmit your database structure or contents
-- **Local Processing**: All natural language to SQL transformations happen securely on your device
-- **API Key Scope**: Your API key is only used for authentication, not for data access
+### 2.1 Tool argument schemas (abridged)
+All four tools share the same optional `databaseConfig` object.  
+```jsonc
+{
+  "databaseConfig": {
+    "databaseType": "postgres | mysql | mongodb | databricks", // default from env
+    "host": "string",
+    "user": "string",
+    "password": "string",  // never include in prompts!
+    "database": "string",   // db / catalog / default schema
+    "port": 5432,
+    "disableSSL": "true | false",
+    "mongoOptions": { … },
+    "databricksOptions": { "httpPath": "…" }
+  },
+  "prompt": "Natural-language question to answer",
+  "databaseConnectionId": "string        // optional Render-hosted ID",
+  "celpApiKey": "string"                 // if env not set
+}
+```
 
-This architecture ensures your sensitive data and database credentials remain completely private while still benefiting from powerful natural language query capabilities.
+Parameters are validated with `zod` before execution.  
+If `process.env.DONT_USE_DB_ENVS !== "true"` you can omit `databaseConfig` entirely and rely on environment variables instead.
 
-## 📋 Claude Desktop Integration
+---
 
-**The recommended way to use this MCP server is with Claude Desktop.**
+## 3&nbsp;•&nbsp;Quick-start for **MCP clients / LLM agents**
 
-To integrate with Claude Desktop:
+1. **Launch** the server:
+   ```bash
+   npx -y celp-mcp            # or: npm i -g celp-mcp && celp-mcp
+   ```
+2. **Initialize** via MCP:
+   ```jsonc
+   // Client → Server (stdio)
+   { "id": 0, "jsonrpc": "2.0", "method": "initialize", "params": {"capabilities": {}} }
+   ```
+3. The server responds with its capabilities (tools list).  
+4. **Call tools** using `call_tool` requests:
+   ```jsonc
+   {
+     "id": 1,
+     "jsonrpc": "2.0",
+     "method": "call_tool",
+     "params": {
+       "name": "query-database-turbo",
+       "arguments": {
+         "prompt": "How many orders were placed yesterday?"
+       }
+     }
+   }
+   ```
+5. Read streamed progress on `stderr`, final markdown arrives as the `result` field of the response.
 
-1. Open Claude Desktop settings
-2. Navigate to the MCP Server configuration section
-3. Add the following configuration
-4. Set up environment variables under "env" and save the configuration
-5. Restart Claude Desktop:
-```json
+> **Tool selection heuristic**: default to *turbo* when the user question can be answered by **one SELECT**; otherwise choose *query-database*.
+
+---
+
+## 4&nbsp;•&nbsp;Environment variables
+
+Below is the **authoritative list** of variables the server reads at startup.  
+You may provide them via shell, a `.env` file, or an `env` block inside your Claude / Cursor configuration.
+
+| Variable | Applies to | Required | Description |
+|----------|-----------|----------|-------------|
+| `DATABASE_TYPE` | all | ✅ | `postgres`, `mysql`, `mongodb`, or `databricks` |
+| `DATABASE_HOST` | sql / databricks | ✅ (unless using `MONGO_URL`) | Hostname or IP |
+| `DATABASE_PORT` | sql |   | Defaults: 5432 / 3306 / 27017 |
+| `DATABASE_USER` | sql / databricks | ✅ | Auth username (use `databricks` for DBX) |
+| `DATABASE_PASSWORD` | sql | ✅ | Password for above user |
+| `DATABASE_NAME` | sql / databricks | ✅ | Database (schema) / DBX catalog |
+| `MONGO_URL` | mongodb |   | Full connection string – overrides the host/port variables |
+| `MONGO_*` | mongodb |   | Fine-tune SSL, replica set, pool size etc. (see table below) |
+| `DATABRICKS_HOST` | databricks | ✅ | Workspace hostname, e.g. `abcd.us-east-1.azuredatabricks.net` |
+| `DATABRICKS_TOKEN` | databricks | ✅ | Personal-access token (goes into `password` field) |
+| `DATABRICKS_HTTP_PATH` | databricks | ✅ | SQL warehouse http path (`/sql/1.0/warehouses/…`) |
+| `DATABRICKS_PORT` | databricks |   | Defaults to 443 |
+| `CELP_API_KEY` | all | ✅ | Key for the cloud-side orchestration API |
+| `OPENAI_API_KEY` | optional |   | Only needed if you enable LLM sampling features |
+| `PG_DISABLE_SSL` | postgres |   | Set `true` to connect without SSL |
+| `DEBUG_LOGS` | all |   | `true` → verbose logging |
+
+### 4.1 PostgreSQL & MySQL — minimal example
+```bash
+# .env
+DATABASE_TYPE=postgres
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USER=readonly
+DATABASE_PASSWORD=supersecret
+DATABASE_NAME=analytics
+CELP_API_KEY=sk-...
+```
+Equivalent **programmatic** `databaseConfig` object:
+```jsonc
+{
+  "databaseType": "postgres",
+  "host": "localhost",
+  "user": "readonly",
+  "password": "supersecret",
+  "database": "analytics",
+  "port": 5432
+}
+```
+
+### 4.2 MongoDB
+```bash
+DATABASE_TYPE=mongodb
+MONGO_URL=mongodb://analytics_user:pw@db1.example.com:27017/marketing?authSource=admin
+CELP_API_KEY=sk-...
+
+```
+`mongoOptions` can be passed inline:
+```jsonc
+{
+  "databaseType": "mongodb",
+  "host": "db1.example.com",
+  "user": "analytics_user",
+  "password": "pw",
+  "database": "marketing",
+  "mongoOptions": {
+    "authSource": "admin",
+    "ssl": true,
+    "readPreference": "primaryPreferred"
+  }
+}
+```
+
+### 4.3 Databricks SQL Warehouse
+```bash
+DATABASE_TYPE=databricks
+DATABRICKS_HOST=adb-1234567890.2.azuredatabricks.net
+DATABRICKS_TOKEN=dapiXXXXXXXXXXXXXXXX
+DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/0123456789abcdef
+DATABRICKS_PORT=443               # optional
+DATABRICKS_CATALOG=main           # becomes DATABASE_NAME internally
+DATABASE_USER=databricks          # not actually used but required
+CELP_API_KEY=sk-...
+```
+Programmatic form:
+```jsonc
+{
+  "databaseType": "databricks",
+  "host": "adb-1234567890.2.azuredatabricks.net",
+  "user": "databricks",
+  "password": "dapiXXXXXXXXXXXXXXXX",   // personal-access token
+  "database": "main",                   // catalog / schema
+  "databricksOptions": {
+    "httpPath": "/sql/1.0/warehouses/0123456789abcdef"
+  }
+}
+```
+
+> **Tip** : set `DONT_USE_DB_ENVS=true` in the shell if you want the server to **ignore env vars** and rely solely on the `databaseConfig` you pass in each tool call.
+
+---
+
+## 5&nbsp;•&nbsp;Claude / Cursor integration recipes
+
+Place the JSON block below in:
+* **Claude Desktop →** `~/Library/Application Support/Claude/claude_desktop_config.json`
+* **Cursor (VS Code) →** your *Settings JSON* or `.vscode/mcp.json`
+
+### 5.1 PostgreSQL
+```jsonc
 {
   "mcpServers": {
-    "celp-mcp": {
+    "celp-postgres": {
       "command": "npx",
       "args": ["-y", "celp-mcp"],
       "env": {
-        "DATABASE_HOST": "localhost",
-        "DATABASE_USER": "postgres",
-        "DATABASE_PASSWORD": "mysecretpassword",
-        "DATABASE_NAME": "mydatabase",
         "DATABASE_TYPE": "postgres",
-        "CELP_API_KEY": "your_api_key_here"
+        "DATABASE_HOST": "127.0.0.1",
+        "DATABASE_PORT": "5432",
+        "DATABASE_USER": "readonly",
+        "DATABASE_PASSWORD": "supersecret",
+        "DATABASE_NAME": "analytics",
+        "PG_DISABLE_SSL": "true",
+        "CELP_API_KEY": "sk-..."
       }
     }
   }
 }
 ```
 
-## 🚀 Installation Options
-
-### Using npx (Recommended for Claude Desktop)
-
-The fastest way to get started is with npx:
-
-```bash
-npx celp-mcp
+### 5.2 MySQL
+```jsonc
+{
+  "mcpServers": {
+    "celp-mysql": {
+      "command": "npx",
+      "args": ["-y", "celp-mcp"],
+      "env": {
+        "DATABASE_TYPE": "mysql",
+        "DATABASE_HOST": "db.internal",
+        "DATABASE_PORT": "3306",
+        "DATABASE_USER": "readonly",
+        "DATABASE_PASSWORD": "pw",
+        "DATABASE_NAME": "ecommerce",
+        "CELP_API_KEY": "sk-..."
+      }
+    }
+  }
+}
 ```
 
-This will download and run the package without permanent installation. This method works perfectly with Claude Desktop integration.
+### 5.3 MongoDB (connection-string form)
+```jsonc
+{
+  "mcpServers": {
+    "celp-mongo": {
+      "command": "npx",
+      "args": ["-y", "celp-mcp"],
+      "env": {
+        "DATABASE_TYPE": "mongodb",
+        "MONGO_URL": "mongodb://analytics_user:pw@db1.example.com:27017/marketing?authSource=admin&ssl=true",
+        "CELP_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
 
-### Cloning the Repository (For Development or Customization)
+### 5.4 Databricks SQL Warehouse
+```jsonc
+{
+  "mcpServers": {
+    "celp-dbx": {
+      "command": "npx",
+      "args": ["-y", "celp-mcp"],
+      "env": {
+        "DATABASE_TYPE": "databricks",
+        "DATABRICKS_HOST": "adb-1234567890.2.azuredatabricks.net",
+        "DATABRICKS_TOKEN": "dapiXXXXXXXXXXXXXXXX",
+        "DATABRICKS_HTTP_PATH": "/sql/1.0/warehouses/0123456789abcdef",
+        "DATABRICKS_CATALOG": "main",
+        "CELP_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
 
-If you prefer to clone the repository (also works with Claude Desktop):
+> **After saving**, restart Claude / Cursor. The server will be launched on demand and the four tools will be advertised to the language model automatically.
+
+---
+
+## 6&nbsp;•&nbsp;Advanced usage & orchestration API
+
+`query-database*` tools ultimately send work to an **LLM-driven orchestration service** at
+`https://celp-mcp-server.onrender.com`.  
+To override (e.g., when self-hosting) set `STREAMING_API_URL`.
+
+The path `src/index.ts::orchestrate` shows the full client–socket workflow, including
+schema pre-upload and incremental chunk handling. Feel free to reuse it for custom front-ends.
+
+---
+
+## 7&nbsp;•&nbsp;Security & privacy
+
+* All SQL / Mongo / Spark queries run **locally**.  
+* The orchestration service only receives generated SQL, never raw data.  
+* Credentials are kept in the process env, never serialized over MCP or sockets.
+
+For production deployments we recommend:
+
+1. Provision a **read-only DB user**.
+2. Restrict network access to the DB port.
+3. Rotate `CELP_API_KEY` regularly.
+4. Audit agent prompts to avoid prompt-injection.
+
+---
+
+## 8&nbsp;•&nbsp;Development
 
 ```bash
-git clone https://github.com/empowerlocal/mcp-server.git
+git clone https://github.com/your-org/mcp-server.git
 cd mcp-server
-npm install
-npm run build
-npm start
+pnpm install
+pnpm build && pnpm start              # runs built JS
+pnpm dev                               # ts-node + watch
 ```
 
-To use with Claude Desktop when cloning the repo, adjust your Claude Desktop configuration to point to your local installation.
+The main entry point is [`src/index.ts`](./src/index.ts).  
+Tool definitions live in [`src/initTools.ts`](./src/initTools.ts).
 
-### Global Installation
+---
 
-If you prefer a permanent installation:
+## 9&nbsp;•&nbsp;License
 
-```bash
-npm install -g celp-mcp
-celp-mcp
-```
-
-## 🔧 Environment Variables
-
-This server requires specific environment variables to connect to your database. These are used both for direct execution and when configuring Claude Desktop integration:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_HOST` | Database hostname | localhost |
-| `DATABASE_PORT` | Database port number | 5432 (Postgres), 3306 (MySQL) |
-| `DATABASE_USER` | Database username | root |
-| `DATABASE_PASSWORD` | Database password | |
-| `DATABASE_NAME` | Database/schema name | test_db |
-| `DATABASE_TYPE` | Either 'mysql' or 'postgres' | postgres |
-| `CELP_API_KEY` | API key for Celp services (contact us to obtain) | |
-| `OPENAI_API_KEY` | API key for OpenAI | |
-| `DEBUG_LOGS` | Set to 'true' for detailed logging | false |
-| `PG_DISABLE_SSL` | Set to 'true' to disable SSL for PostgreSQL | false |
-
-> **Important**: A `CELP_API_KEY` is required to use this service. Please reach out to the Celp team to obtain your API key.
-
-### Setting Environment Variables
-
-#### Method 1: .env File (Recommended for Direct Execution)
-Create a `.env` file in your current directory with the required variables:
-
-```
-DATABASE_HOST=localhost
-DATABASE_USER=postgres
-DATABASE_PASSWORD=mysecretpassword
-DATABASE_NAME=mydatabase
-DATABASE_TYPE=postgres
-CELP_API_KEY=your_api_key_here
-OPENAI_API_KEY=sk-...
-```
-
-#### Method 2: Command Line
-Set variables directly in your terminal before running:
-
-```bash
-export DATABASE_HOST=localhost
-export DATABASE_USER=postgres
-export CELP_API_KEY=your_api_key_here
-# Set other variables...
-npx celp-mcp
-```
-
-#### Method 3: Claude Desktop Configuration
-When using with Claude Desktop, set the environment variables in your Claude Desktop MCP configuration as shown in the Claude Desktop Integration section above.
-
-## 🛡️ Best Practices
-
-For optimal security when using this MCP server:
-
-1. **Create a Dedicated Read-Only Database User**: Limit the MCP server's access to read-only operations.
-
-2. **Use Environment Variables**: Never hardcode database credentials in configuration files.
-
-3. **Regular Password Rotation**: Change the read-only user's password periodically.
-
-4. **Restrict Network Access**: Configure your database to only accept connections from trusted IP addresses.
-
-## 💡 Key Features
-
-- **Multi-Database Support**: Works with both MySQL and PostgreSQL
-- **Schema Understanding**: Automatically discovers tables, columns, and relationships
-- **Multi-Schema Support**: Handles multiple schemas in PostgreSQL
-- **Natural Language Queries**: Translates natural language to SQL
-- **Markdown Results**: Returns well-formatted query results
-- **Secure Connections**: SSL support for database connections
-
-## 🔍 Example Queries
-
-Once configured, you can ask Claude natural language questions about your data:
-
-- "Show me the top 10 customers by order value"
-- "What's the average age of users who signed up last month?"
-- "Find duplicate records in the customers table"
-- "Which products have inventory below 10 units?"
-- "Graph monthly sales for the past year"
-
-## 📊 Multi-Schema Support
-
-When connecting to a PostgreSQL database, the server automatically:
-
-1. Discovers all available schemas (excluding system schemas)
-2. Loads tables, columns, and indexes from all schemas
-3. Uses schema-qualified identifiers when needed
-4. Automatically determines which schemas and tables are relevant for a query
-
-## 🔧 Troubleshooting
-
-If you encounter issues:
-
-1. **Connection Problems**: Verify database credentials and network access
-2. **Schema Discovery Issues**: Enable debug logs with `DEBUG_LOGS=true`
-3. **SSL Errors**: Try setting `PG_DISABLE_SSL=true` if your database doesn't use SSL
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a pull request.
-
-## 📜 License
-
-This project is licensed under the ISC License.
+Released under the **MIT License** – see [`LICENSE`](./LICENSE) for full text.
