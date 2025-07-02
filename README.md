@@ -30,159 +30,42 @@ No network sockets are opened unless you start the optional remote streaming hel
 | `get-index-map` | Return **index / key map** for optimisation | – | same as above (all optional) |
 
 ### 2.1 Tool argument schemas (abridged)
-All four tools share the same optional `databaseConfig` object.  
-```jsonc
-{
-  "databaseConfig": {
-    "databaseType": "postgres | mysql | mongodb | databricks", // default from env
-    "host": "string",
-    "user": "string",
-    "password": "string",  // never include in prompts!
-    "database": "string",   // db / catalog / default schema
-    "port": 5432,
-    "disableSSL": "true | false",
-    "mongoOptions": { … },
-    "databricksOptions": { "httpPath": "…" }
-  },
-  "prompt": "Natural-language question to answer",
-  "databaseConnectionId": "string        // optional Render-hosted ID",
-  "celpApiKey": "string"                 // if env not set
-}
-```
-
-Parameters are validated with `zod` before execution.  
-If `process.env.DONT_USE_DB_ENVS !== "true"` you can omit `databaseConfig` entirely and rely on environment variables instead.
 
 ---
 
-## 3&nbsp;•&nbsp;Quick-start for **MCP clients / LLM agents**
+## 3&nbsp;•&nbsp;Plug-and-play usage
 
-1. **Launch** the server:
-   ```bash
-   npx -y celp-mcp            # or: npm i -g celp-mcp && celp-mcp
-   ```
-2. **Initialize** via MCP:
-   ```jsonc
-   // Client → Server (stdio)
-   { "id": 0, "jsonrpc": "2.0", "method": "initialize", "params": {"capabilities": {}} }
-   ```
-3. The server responds with its capabilities (tools list).  
-4. **Call tools** using `call_tool` requests:
-   ```jsonc
-   {
-     "id": 1,
-     "jsonrpc": "2.0",
-     "method": "call_tool",
-     "params": {
-       "name": "query-database-turbo",
-       "arguments": {
-         "prompt": "How many orders were placed yesterday?"
-       }
-     }
-   }
-   ```
-5. Read streamed progress on `stderr`, final markdown arrives as the `result` field of the response.
+For most users **no manual JSON-RPC calls are necessary**. Any modern MCP client (Claude Desktop, Cursor, `@modelcontextprotocol/sdk`, etc.) will:
 
-> **Tool selection heuristic**: default to *turbo* when the user question can be answered by **one SELECT**; otherwise choose *query-database*.
+1. Spawn the server as a subprocess via the command provided in your config (see Section 5).
+2. Negotiate the MCP handshake automatically.
+3. Surface the four tools (`query-database`, `query-database-turbo`, `get-schema`, `get-index-map`) to the language model.
+
+All you have to supply are
+
+* the **command & args** (usually `npx -y celp-mcp`), and
+* the **environment variables** for your database + `CELP_API_KEY`.
+
+If you are building a **custom MCP client** and need low-level details (e.g. raw `initialize` / `call_tool` payloads), see the annotated code in [`src/index.ts`](./src/index.ts) or the official protocol docs at <https://modelcontextprotocol.io>.
 
 ---
 
-## 4&nbsp;•&nbsp;Environment variables
+## 4&nbsp;•&nbsp;Essential environment variables
 
-Below is the **authoritative list** of variables the server reads at startup.  
-You may provide them via shell, a `.env` file, or an `env` block inside your Claude / Cursor configuration.
+At minimum the process needs:
 
-| Variable | Applies to | Required | Description |
-|----------|-----------|----------|-------------|
-| `DATABASE_TYPE` | all | ✅ | `postgres`, `mysql`, `mongodb`, or `databricks` |
-| `DATABASE_HOST` | sql / databricks | ✅ (unless using `MONGO_URL`) | Hostname or IP |
-| `DATABASE_PORT` | sql |   | Defaults: 5432 / 3306 / 27017 |
-| `DATABASE_USER` | sql / databricks | ✅ | Auth username (use `databricks` for DBX) |
-| `DATABASE_PASSWORD` | sql | ✅ | Password for above user |
-| `DATABASE_NAME` | sql / databricks | ✅ | Database (schema) / DBX catalog |
-| `MONGO_URL` | mongodb |   | Full connection string – overrides the host/port variables |
-| `MONGO_*` | mongodb |   | Fine-tune SSL, replica set, pool size etc. (see table below) |
-| `DATABRICKS_HOST` | databricks | ✅ | Workspace hostname, e.g. `abcd.us-east-1.azuredatabricks.net` |
-| `DATABRICKS_TOKEN` | databricks | ✅ | Personal-access token (goes into `password` field) |
-| `DATABRICKS_HTTP_PATH` | databricks | ✅ | SQL warehouse http path (`/sql/1.0/warehouses/…`) |
-| `DATABRICKS_PORT` | databricks |   | Defaults to 443 |
-| `CELP_API_KEY` | all | ✅ | Key for the cloud-side orchestration API |
-| `OPENAI_API_KEY` | optional |   | Only needed if you enable LLM sampling features |
-| `PG_DISABLE_SSL` | postgres |   | Set `true` to connect without SSL |
-| `DEBUG_LOGS` | all |   | `true` → verbose logging |
+| Database | Required vars |
+|----------|---------------|
+| Postgres/MySQL | `DATABASE_TYPE` · `DATABASE_HOST` · `DATABASE_USER` · `DATABASE_PASSWORD` · `DATABASE_NAME` |
+| MongoDB  | Either the five above **or** a single `MONGO_URL` |
+| Databricks | `DATABASE_TYPE=databricks` · `DATABRICKS_HOST` · `DATABRICKS_TOKEN` · `DATABRICKS_HTTP_PATH` · `DATABRICKS_CATALOG` |
 
-### 4.1 PostgreSQL & MySQL — minimal example
-```bash
-# .env
-DATABASE_TYPE=postgres
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_USER=readonly
-DATABASE_PASSWORD=supersecret
-DATABASE_NAME=analytics
-CELP_API_KEY=sk-...
-```
-Equivalent **programmatic** `databaseConfig` object:
-```jsonc
-{
-  "databaseType": "postgres",
-  "host": "localhost",
-  "user": "readonly",
-  "password": "supersecret",
-  "database": "analytics",
-  "port": 5432
-}
-```
+And for **every** setup:
 
-### 4.2 MongoDB
-```bash
-DATABASE_TYPE=mongodb
-MONGO_URL=mongodb://analytics_user:pw@db1.example.com:27017/marketing?authSource=admin
-CELP_API_KEY=sk-...
+* `CELP_API_KEY` – authorises the orchestration backend.
 
-```
-`mongoOptions` can be passed inline:
-```jsonc
-{
-  "databaseType": "mongodb",
-  "host": "db1.example.com",
-  "user": "analytics_user",
-  "password": "pw",
-  "database": "marketing",
-  "mongoOptions": {
-    "authSource": "admin",
-    "ssl": true,
-    "readPreference": "primaryPreferred"
-  }
-}
-```
-
-### 4.3 Databricks SQL Warehouse
-```bash
-DATABASE_TYPE=databricks
-DATABRICKS_HOST=adb-1234567890.2.azuredatabricks.net
-DATABRICKS_TOKEN=dapiXXXXXXXXXXXXXXXX
-DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/0123456789abcdef
-DATABRICKS_PORT=443               # optional
-DATABRICKS_CATALOG=main           # becomes DATABASE_NAME internally
-DATABASE_USER=databricks          # not actually used but required
-CELP_API_KEY=sk-...
-```
-Programmatic form:
-```jsonc
-{
-  "databaseType": "databricks",
-  "host": "adb-1234567890.2.azuredatabricks.net",
-  "user": "databricks",
-  "password": "dapiXXXXXXXXXXXXXXXX",   // personal-access token
-  "database": "main",                   // catalog / schema
-  "databricksOptions": {
-    "httpPath": "/sql/1.0/warehouses/0123456789abcdef"
-  }
-}
-```
-
-> **Tip** : set `DONT_USE_DB_ENVS=true` in the shell if you want the server to **ignore env vars** and rely solely on the `databaseConfig` you pass in each tool call.
+That's all an MCP client must supply.  
+See **docs/ADVANCED.md** if you want SSL flags, replica-set tuning, debug logging, etc.
 
 ---
 
@@ -279,7 +162,7 @@ Place the JSON block below in:
 ## 6&nbsp;•&nbsp;Advanced usage & orchestration API
 
 `query-database*` tools ultimately send work to an **LLM-driven orchestration service** at
-`https://celp-mcp-server.onrender.com`.  
+`https://celp-celp-mcp.onrender.com`.  
 To override (e.g., when self-hosting) set `STREAMING_API_URL`.
 
 The path `src/index.ts::orchestrate` shows the full client–socket workflow, including
@@ -305,8 +188,8 @@ For production deployments we recommend:
 ## 8&nbsp;•&nbsp;Development
 
 ```bash
-git clone https://github.com/your-org/mcp-server.git
-cd mcp-server
+git clone https://github.com/CelpAI/celp-mcp.git
+cd celp-mcp
 pnpm install
 pnpm build && pnpm start              # runs built JS
 pnpm dev                               # ts-node + watch
