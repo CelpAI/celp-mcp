@@ -1,6 +1,6 @@
 {
   "name": "celp-mcp",
-  "version": "1.0.40",
+  "version": "1.0.50",
   "bin": {
     "celp-mcp": "./build/index.js",
     "celp": "./build/index.js"
@@ -9,6 +9,10 @@
     "build"
   ],
   "main": "build/index.js",
+  "exports": {
+    ".": "./build/index.js",
+    "./tools": "./build/tools.js"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc && chmod 755 build/index.js",
@@ -30,16 +34,19 @@
     "url": "https://github.com/empowerlocal/mcp-server.git"
   },
   "dependencies": {
+    "@databricks/sql": "^1.11.0",
     "@modelcontextprotocol/sdk": "^1.11.0",
     "@types/pg": "^8.11.11",
     "dotenv": "^16.4.7",
+    "mongodb": "^6.17.0",
     "mysql2": "^3.9.3",
     "openai": "^4.96.0",
     "pg": "^8.14.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "uuid": "^11.1.0",
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.24.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",

@@ -6,13 +6,17 @@
 import mysql from "mysql2/promise";
 import pg from "pg";
 
+
 const debugLog = (...args: any[]) => {
-  console.log(...args);
+  // console.log(...args);
 };
+
 
 const debugError = (...args: any[]) => {
   console.error(...args);
 };
+
+
 /**
  * Example in-memory references to "schemaMap", "indexMap", and table sizes.
  * In a real setup, you might load these on startup from MySQL's information_schema,
@@ -43,12 +47,464 @@ export let globalDataStructureMetadata: any = {
   // Expand fields as needed
 };
 
-export async function loadSchemaMap(conn: mysql.Connection | pg.Client, dbName: string, databaseType: string = "mysql") {
+// MongoDB schema inference functions
+export async function loadMongoSchemaMap(client: any, dbName: string) {
+  debugLog('SchemaManager', 'Loading MongoDB schema map');
+  
+  const db = client.db(dbName);
+  const collections = await db.listCollections().toArray();
+  
+  const localSchemaMap: Record<string, Array<any>> = {};
+  
+  for (const collectionInfo of collections) {
+    const collectionName = collectionInfo.name;
+    debugLog('SchemaManager', `Analyzing collection: ${collectionName}`);
+    
+    try {
+      const collection = db.collection(collectionName);
+      
+      // Get sample documents to infer schema
+      const sampleSize = 100;
+      const sampleDocs = await collection.aggregate([
+        { $sample: { size: sampleSize } }
+      ]).toArray();
+      
+      if (sampleDocs.length === 0) {
+        debugLog('SchemaManager', `Collection ${collectionName} is empty`);
+        localSchemaMap[collectionName] = [];
+        continue;
+      }
+      
+      // Infer field schema from sample documents
+      const fieldSchema = inferFieldsFromDocuments(sampleDocs);
+      localSchemaMap[collectionName] = fieldSchema;
+      
+      debugLog('SchemaManager', `Inferred ${fieldSchema.length} fields for ${collectionName}`);
+      
+    } catch (error) {
+      debugError('SchemaManager', `Error analyzing collection ${collectionName}:`, error);
+      localSchemaMap[collectionName] = [];
+    }
+  }
+  
+  schemaMap = localSchemaMap;
+  debugLog('SchemaManager', `Loaded schema for ${Object.keys(localSchemaMap).length} collections`);
+}
+
+function inferFieldsFromDocuments(docs: any[]): Array<any> {
+  const fieldMap = new Map<string, {
+    name: string;
+    types: Set<string>;
+    isArray: boolean;
+    isNested: boolean;
+    nullCount: number;
+    totalCount: number;
+    sampleValues: any[];
+  }>();
+  
+  // Analyze each document
+  docs.forEach(doc => {
+    analyzeDocumentFields(doc, fieldMap, '');
+  });
+  
+  // Convert to schema format
+  const fields: Array<any> = [];
+  
+  fieldMap.forEach((fieldInfo, fieldPath) => {
+    const types = Array.from(fieldInfo.types);
+    const primaryType = getMostCommonType(types);
+    
+    fields.push({
+      columnName: fieldPath,
+      dataType: primaryType,
+      isNullable: fieldInfo.nullCount > 0 ? 'YES' : 'NO',
+      nullPercentage: (fieldInfo.nullCount / fieldInfo.totalCount) * 100,
+      isArray: fieldInfo.isArray,
+      isNested: fieldInfo.isNested,
+      allTypes: types,
+      sampleValues: fieldInfo.sampleValues.slice(0, 5), // Keep top 5 sample values
+      occurrenceCount: fieldInfo.totalCount - fieldInfo.nullCount
+    });
+  });
+  
+  return fields.sort((a, b) => a.columnName.localeCompare(b.columnName));
+}
+
+function analyzeDocumentFields(
+  obj: any, 
+  fieldMap: Map<string, any>, 
+  prefix: string
+) {
+  for (const [key, value] of Object.entries(obj)) {
+    const fieldPath = prefix ? `${prefix}.${key}` : key;
+    
+    if (!fieldMap.has(fieldPath)) {
+      fieldMap.set(fieldPath, {
+        name: fieldPath,
+        types: new Set<string>(),
+        isArray: false,
+        isNested: false,
+        nullCount: 0,
+        totalCount: 0,
+        sampleValues: []
+      });
+    }
+    
+    const fieldInfo = fieldMap.get(fieldPath)!;
+    fieldInfo.totalCount++;
+    
+    if (value === null || value === undefined) {
+      fieldInfo.nullCount++;
+      fieldInfo.types.add('null');
+    } else if (Array.isArray(value)) {
+      fieldInfo.isArray = true;
+      fieldInfo.types.add('array');
+      
+      // Analyze array elements
+      if (value.length > 0) {
+        const elementType = typeof value[0];
+        fieldInfo.types.add(`array<${elementType}>`);
+        
+        // If array contains objects, analyze nested structure
+        if (elementType === 'object' && value[0] !== null) {
+          fieldInfo.isNested = true;
+          value.slice(0, 3).forEach((item, index) => {
+            if (typeof item === 'object' && item !== null) {
+              analyzeDocumentFields(item, fieldMap, `${fieldPath}[${index}]`);
+            }
+          });
+        }
+      }
+      
+      fieldInfo.sampleValues.push(value.slice(0, 3)); // Sample first 3 array elements
+    } else if (typeof value === 'object' && value !== null) {
+      fieldInfo.isNested = true;
+      fieldInfo.types.add('object');
+      
+      // Recursively analyze nested object
+      analyzeDocumentFields(value, fieldMap, fieldPath);
+      fieldInfo.sampleValues.push('[nested object]');
+    } else {
+      const type = typeof value;
+      fieldInfo.types.add(type);
+      
+      // Add sample values (keep unique ones)
+      if (fieldInfo.sampleValues.length < 10 && !fieldInfo.sampleValues.includes(value)) {
+        fieldInfo.sampleValues.push(value);
+      }
+    }
+  }
+}
+
+function getMostCommonType(types: string[]): string {
+  if (types.length === 1) return types[0];
+  
+  // Priority order for mixed types
+  const typePriority = ['string', 'number', 'boolean', 'object', 'array', 'null'];
+  
+  for (const type of typePriority) {
+    if (types.includes(type)) return type;
+  }
+  
+  return types[0] || 'unknown';
+}
+
+export async function loadMongoIndexes(client: any, dbName: string) {
+  debugLog('SchemaManager', 'Loading MongoDB indexes');
+  
+  const db = client.db(dbName);
+  const collections = await db.listCollections().toArray();
+  
+  const localIndexMap: Record<string, Array<any>> = {};
+  
+  for (const collectionInfo of collections) {
+    const collectionName = collectionInfo.name;
+    const collection = db.collection(collectionName);
+    
+    try {
+      const indexes = await collection.indexes();
+      
+      localIndexMap[collectionName] = indexes.map((index: any) => ({
+        indexName: index.name,
+        keys: index.key,
+        unique: index.unique || false,
+        sparse: index.sparse || false,
+        compound: Object.keys(index.key).length > 1,
+        fields: Object.keys(index.key),
+        direction: index.key,
+        textIndex: index.weights ? true : false,
+        partialFilter: index.partialFilterExpression || null
+      }));
+      
+      debugLog('SchemaManager', `Loaded ${indexes.length} indexes for collection ${collectionName}`);
+      
+    } catch (error) {
+      debugError('SchemaManager', `Error loading indexes for ${collectionName}:`, error);
+      localIndexMap[collectionName] = [];
+    }
+  }
+  
+  indexMap = localIndexMap;
+}
+
+export async function loadMongoCollectionStats(client: any, dbName: string) {
+  debugLog('SchemaManager', 'Loading MongoDB collection statistics');
+  
+  const db = client.db(dbName);
+  const collections = await db.listCollections().toArray();
+  
+  const localSizeCache: Record<string, number> = {};
+  
+  for (const collectionInfo of collections) {
+    const collectionName = collectionInfo.name;
+    
+    try {
+      const stats = await db.command({ collStats: collectionName });
+      
+      localSizeCache[collectionName] = stats.count || 0;
+      
+      debugLog('SchemaManager', `Collection ${collectionName}: ${stats.count} documents`);
+      
+    } catch (error) {
+      debugError('SchemaManager', `Error getting stats for ${collectionName}:`, error);
+      localSizeCache[collectionName] = 0;
+    }
+  }
+  
+  tableSizeCache = localSizeCache;
+}
+
+export async function loadDatabricksSchemaMap(conn: any, catalogName: string, schemaName: string = 'default', config?: any) {
+  debugLog('SchemaManager', `Loading Databricks schema from catalog ${catalogName}`);
+  
+  try {
+    // Use the existing connection directly instead of creating new ones
+    const session = await conn.openSession();
+    
+    // Load schema information for ALL schemas in the catalog, not just 'default'
+    // This matches the behavior of loadDatabricksTableSizes
+    const query = `
+      SELECT 
+        table_catalog,
+        table_schema, 
+        table_name,
+        column_name,
+        data_type,
+        is_nullable,
+        column_default,
+        ordinal_position
+      FROM ${catalogName}.information_schema.columns
+      WHERE table_catalog = '${catalogName}'
+      ORDER BY table_schema, table_name, ordinal_position
+    `;
+    
+    const operation = await session.executeStatement(query, { runAsync: true, maxRows: 50000 });
+    const rows = await operation.fetchAll();
+    await operation.close();
+    await session.close();
+    
+    const localSchemaMap: Record<string, Array<any>> = {};
+    
+    for (const row of rows) {
+      // Use catalog.schema.table naming convention
+      const qualifiedTableName = `${row.table_catalog}.${row.table_schema}.${row.table_name}`;
+      
+      if (!localSchemaMap[qualifiedTableName]) {
+        localSchemaMap[qualifiedTableName] = [];
+      }
+      
+      localSchemaMap[qualifiedTableName].push({
+        columnName: row.column_name,
+        dataType: row.data_type,
+        nullable: row.is_nullable === 'YES',
+        defaultValue: row.column_default,
+        position: row.ordinal_position
+      });
+    }
+    
+    schemaMap = localSchemaMap;
+    debugLog('SchemaManager', `Loaded ${Object.keys(localSchemaMap).length} Databricks tables`);
+    
+  } catch (error) {
+    debugError('SchemaManager', `Error loading Databricks schema from ${catalogName}.${schemaName}:`, error);
+    schemaMap = {};
+  }
+}
+
+export async function loadDatabricksTableSizes(conn: any, catalogName: string, config?: any) {
+  debugLog('SchemaManager', `Loading Databricks table sizes for catalog ${catalogName}`);
+  
+  try {
+    // Use the existing connection directly instead of creating new ones
+    const session = await conn.openSession();
+    
+    const localSizeCache: Record<string, number> = {};
+    
+    try {
+      // Try to get table list from system information_schema (more efficient than SHOW commands)
+      const tablesQuery = `
+        SELECT 
+          CONCAT(table_catalog, '.', table_schema, '.', table_name) as qualified_name,
+          table_catalog,
+          table_schema,
+          table_name
+        FROM system.information_schema.tables
+        WHERE table_catalog = '${catalogName}'
+        AND table_type = 'MANAGED'
+        ORDER BY table_catalog, table_schema, table_name
+      `;
+      
+      const tablesOperation = await session.executeStatement(tablesQuery, { runAsync: true, maxRows: 10000 });
+      const tables = await tablesOperation.fetchAll();
+      await tablesOperation.close();
+      
+      debugLog('SchemaManager', `Found ${tables.length} tables to process from system.information_schema`);
+      
+      // If we got tables from information_schema, use those (much more efficient)
+      if (tables.length > 0) {
+        // Process tables in batches to avoid overwhelming the connection
+        const batchSize = 10;
+        for (let i = 0; i < tables.length; i += batchSize) {
+          const batch = tables.slice(i, i + batchSize);
+          
+          // Process batch in parallel for better performance
+          const batchPromises = batch.map(async (table: any) => {
+            const qualifiedName = table.qualified_name;
+            try {
+              // Use DESCRIBE DETAIL to get table statistics (this is the standard Databricks approach)
+              const describeQuery = `DESCRIBE DETAIL ${qualifiedName}`;
+              const describeOperation = await session.executeStatement(describeQuery, { runAsync: true, maxRows: 100 });
+              const description = await describeOperation.fetchAll();
+              await describeOperation.close();
+              
+              // Extract row count from DESCRIBE DETAIL results
+              let rowCount = 0;
+              if (description && description.length > 0) {
+                const tableInfo = description[0];
+                // DESCRIBE DETAIL returns numRows field directly
+                rowCount = parseInt(tableInfo.numRows, 10) || 0;
+              }
+              
+              return { qualifiedName, rowCount };
+            } catch (error) {
+              debugError('SchemaManager', `Error getting size for ${qualifiedName}:`, error);
+              return { qualifiedName, rowCount: 0 };
+            }
+          });
+          
+          // Wait for batch to complete
+          const batchResults = await Promise.all(batchPromises);
+          
+          // Update cache with batch results
+          for (const result of batchResults) {
+            localSizeCache[result.qualifiedName] = result.rowCount;
+            debugLog('SchemaManager', `Table ${result.qualifiedName}: ${result.rowCount} rows`);
+          }
+          
+          debugLog('SchemaManager', `Processed batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(tables.length/batchSize)}`);
+        }
+        
+        await session.close();
+        tableSizeCache = localSizeCache;
+        debugLog('SchemaManager', `Loaded sizes for ${Object.keys(localSizeCache).length} Databricks tables via optimized batch processing`);
+        return;
+      }
+    } catch (error) {
+      debugLog('SchemaManager', 'system.information_schema.tables not available, falling back to SHOW method');
+    }
+    
+    // Fallback: Use the original method with individual SHOW/DESCRIBE queries
+    debugLog('SchemaManager', 'Using fallback method with SHOW commands');
+    
+    // Query all schemas in the catalog
+    const schemasQuery = `SHOW SCHEMAS IN ${catalogName}`;
+    let schemasOperation = await session.executeStatement(schemasQuery, { runAsync: true, maxRows: 1000 });
+    const schemas = await schemasOperation.fetchAll();
+    await schemasOperation.close();
+    
+    for (const schema of schemas) {
+      const schemaName = schema.databaseName || schema.namespace_name || schema.schema_name;
+      
+      try {
+        const tablesQuery = `SHOW TABLES IN ${catalogName}.${schemaName}`;
+        let tablesOperation = await session.executeStatement(tablesQuery, { runAsync: true, maxRows: 1000 });
+        const tables = await tablesOperation.fetchAll();
+        await tablesOperation.close();
+        
+        for (const table of tables) {
+          const tableName = table.tableName || table.table_name;
+          const qualifiedName = `${catalogName}.${schemaName}.${tableName}`;
+          
+          try {
+            // Use DESCRIBE EXTENDED to get table statistics
+            const describeQuery = `DESCRIBE EXTENDED ${qualifiedName}`;
+            let describeOperation = await session.executeStatement(describeQuery, { runAsync: true, maxRows: 1000 });
+            const description = await describeOperation.fetchAll();
+            await describeOperation.close();
+            
+            // Parse statistics from description
+            let rowCount = 0;
+            for (const row of description) {
+              if (row.col_name === 'Statistics' && row.data_type) {
+                // Extract row count from statistics string
+                const rowCountMatch = row.data_type.match(/(\d+)\s+rows?/i);
+                if (rowCountMatch) {
+                  rowCount = parseInt(rowCountMatch[1], 10);
+                }
+                break;
+              }
+            }
+            
+            localSizeCache[qualifiedName] = rowCount;
+            debugLog('SchemaManager', `Table ${qualifiedName}: ${rowCount} rows`);
+            
+          } catch (error) {
+            debugError('SchemaManager', `Error getting size for ${qualifiedName}:`, error);
+            localSizeCache[qualifiedName] = 0;
+          }
+        }
+        
+      } catch (error) {
+        debugError('SchemaManager', `Error loading tables from schema ${schemaName}:`, error);
+      }
+    }
+    
+    await session.close();
+    
+    tableSizeCache = localSizeCache;
+    debugLog('SchemaManager', `Loaded sizes for ${Object.keys(localSizeCache).length} Databricks tables via individual queries`);
+    
+  } catch (error) {
+    debugError('SchemaManager', `Error loading Databricks table sizes for catalog ${catalogName}:`, error);
+    tableSizeCache = {};
+  }
+}
+
+export async function loadDatabricksIndexes(conn: any, catalogName: string, config?: any) {
+  debugLog('SchemaManager', 'Loading Databricks clustering information');
+  
+  // Databricks doesn't have traditional indexes, but has clustering keys
+  // For now, just initialize empty index map
+  // Could be extended to include:
+  // - Clustering columns from DESCRIBE EXTENDED
+  // - Partition columns
+  // - Z-order columns
+  
+  indexMap = {};
+  debugLog('SchemaManager', 'Databricks index map initialized (clustering keys not yet implemented)');
+}
+
+export async function loadSchemaMap(conn: mysql.Connection | pg.Client | any, dbName: string, databaseType: string = "mysql", config?: any) {
   if (databaseType === "mysql") {
     await loadMysqlSchemaMap(conn as mysql.Connection, dbName);
-  } else {
+  } else if (databaseType === "postgres") {
     // For PostgreSQL, load all schemas
     await loadAllPostgresSchemas(conn as pg.Client, dbName);
+  } else if (databaseType === "mongodb") {
+    await loadMongoSchemaMap(conn, dbName);
+  } else if (databaseType === "databricks") {
+    // throw new Error("trying databricks");
+    await loadDatabricksSchemaMap(conn, dbName, config?.databricksOptions?.schema || 'default', config);
   }
 }
 
@@ -125,6 +581,9 @@ export async function loadMysqlSchemaMap(conn: mysql.Connection, dbName: string)
     [dbName]
   );
 
+  // Reset the indexMap before populating it to prevent memory leaks
+  indexMap = {};
+
   for (const row of indexRows as Array<{
     TABLE_NAME: string;
     INDEX_NAME: string;
@@ -153,6 +612,10 @@ export async function loadMysqlSchemaMap(conn: mysql.Connection, dbName: string)
 export async function loadAllPostgresSchemas(conn: pg.Client, dbName: string) {
   try {
     debugLog('MultiSchema', 'Discovering all PostgreSQL schemas');
+    
+    // Reset the schemaMap before populating it to prevent memory leaks
+    schemaMap = {};
+    
     // Get all schemas in the database, excluding system schemas
     const schemasResult = await conn.query(`
       SELECT schema_name
@@ -314,12 +777,16 @@ export async function loadPostgresSchemaMap(conn: pg.Client, dbName: string) {
   }
 }
 
-export async function loadTableSizes(conn: mysql.Connection | pg.Client, dbName: string, databaseType: string = "mysql") {
+export async function loadTableSizes(conn: mysql.Connection | pg.Client | any, dbName: string, databaseType: string = "mysql", config?: any) {
   if (databaseType === "mysql") {
     await loadMysqlTableSizes(conn as mysql.Connection, dbName);
-  } else {
+  } else if (databaseType === "postgres") {
     // For PostgreSQL, load table sizes for all schemas
     await loadAllPostgresTableSizes(conn as pg.Client);
+  } else if (databaseType === "mongodb") {
+    await loadMongoCollectionStats(conn, dbName);
+  } else if (databaseType === "databricks") {
+    await loadDatabricksTableSizes(conn, dbName, config);
   }
 }
 
@@ -342,6 +809,9 @@ export async function loadMysqlTableSizes(conn: mysql.Connection, dbName: string
 export async function loadAllPostgresTableSizes(conn: pg.Client) {
   try {
     debugLog('MultiSchema', 'Discovering all PostgreSQL schemas for table sizes');
+    
+    // Reset the tableSizeCache before populating it to prevent memory leaks
+    tableSizeCache = {};
     // Get all schemas in the database, excluding system schemas
     const schemasResult = await conn.query(`
       SELECT schema_name
@@ -392,6 +862,9 @@ export async function loadAllPostgresTableSizes(conn: pg.Client) {
 export async function loadAllPostgresIndexes(conn: pg.Client) {
   try {
     debugLog('MultiSchema', 'Loading PostgreSQL indexes from all schemas');
+    
+    // Reset the indexMap before loading new indexes to prevent memory leaks
+    indexMap = {};
     
     // Load all indexes across all user schemas
     const result = await conn.query(`

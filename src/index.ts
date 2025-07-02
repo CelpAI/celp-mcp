@@ -12,11 +12,13 @@ import { createConnection } from "mysql2/promise";
 import type { DefaultEventsMap } from "socket.io/dist/typed-events";
 import * as Connector from './connector';
 import { ConnectorCfg, indexMap, schemaMap } from "./connector";
+import { MongoClient } from "mongodb";
+import { registerTool } from './toolRegistry';
 
 require("dotenv").config();
 
 /* ── Helper types ───────────────────────────────────────────────────── */
-type DbType = "postgres" | "mysql";
+type DbType = "postgres" | "mysql" | "mongodb" | 'databricks';
 interface DbCfg {
   databaseType: DbType;
   host: string;
@@ -24,14 +26,251 @@ interface DbCfg {
   password: string;
   database: string;
   port?: number;
+  mongoOptions?: {
+    authSource?: string;
+    ssl?: boolean;
+    replicaSet?: string;
+    readPreference?: 'primary' | 'secondary' | 'primaryPreferred' | 'secondaryPreferred' | 'nearest';
+    maxPoolSize?: number;
+    minPoolSize?: number;
+    serverSelectionTimeoutMS?: number;
+    socketTimeoutMS?: number;
+    connectTimeoutMS?: number;
+  };
+  databricksHttpPath?: string;
 }
 
 const DEBUG = process.env.DEBUG_LOGS === "true";
 const log = (...a: any[]) => DEBUG && console.log(...a);
 
+/* ── Databricks Connection Manager ────────────────────────────────────── */
+interface DatabricksConnection {
+  client: any;
+  connection: any;
+  isConnected: boolean;
+  lastUsed: number;
+  config: DbCfg;
+}
+
+class DatabricksConnectionManager {
+  private connections = new Map<string, DatabricksConnection>();
+  private initializationPromises = new Map<string, Promise<DatabricksConnection>>();
+  private readonly CONNECTION_TIMEOUT = 30000; // 30 seconds
+  private readonly IDLE_TIMEOUT = 300000; // 5 minutes
+  private cleanupInterval?: NodeJS.Timeout;
+
+  constructor() {
+    // Clean up idle connections every minute
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupIdleConnections();
+    }, 60000);
+  }
+
+  private getConnectionKey(cfg: DbCfg): string {
+    return `${cfg.host}:${cfg.port || 443}:${cfg.user}:${cfg.database}`;
+  }
+
+  async getConnection(cfg: DbCfg): Promise<DatabricksConnection> {
+    if (cfg.databaseType !== 'databricks') {
+      throw new Error('This method is only for Databricks connections');
+    }
+
+    const key = this.getConnectionKey(cfg);
+    
+    // Check if we already have a connected instance
+    const existing = this.connections.get(key);
+    if (existing && existing.isConnected) {
+      existing.lastUsed = Date.now();
+      return existing;
+    }
+
+    // Check if we're already initializing this connection
+    const initPromise = this.initializationPromises.get(key);
+    if (initPromise) {
+      return await initPromise;
+    }
+
+    // Create new connection
+    const connectionPromise = this.createConnection(cfg, key);
+    this.initializationPromises.set(key, connectionPromise);
+
+    try {
+      const connection = await connectionPromise;
+      this.connections.set(key, connection);
+      return connection;
+    } finally {
+      this.initializationPromises.delete(key);
+    }
+  }
+
+  private async createConnection(cfg: DbCfg, key: string): Promise<DatabricksConnection> {
+    console.error(`🔄 Initializing Databricks connection for ${cfg.host}...`);
+    
+    try {
+      // Dynamic import to handle optional Databricks dependency
+      const databricksSql = await import('@databricks/sql');
+      
+      const httpPath = cfg.databricksHttpPath;
+      if (!httpPath) {
+        throw new Error('Missing Databricks httpPath in configuration');
+      }
+
+      console.error(`⚡ Connecting to Databricks warehouse...`);
+      
+      const client = new databricksSql.DBSQLClient();
+      const connection = await Promise.race([
+        client.connect({
+          host: cfg.host,
+          path: httpPath,
+          token: cfg.password, // token stored in password field
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Databricks connection timeout')), this.CONNECTION_TIMEOUT)
+        )
+      ]);
+
+      console.error(`✅ Databricks connection established successfully!`);
+
+      const databricksConnection: DatabricksConnection = {
+        client,
+        connection,
+        isConnected: true,
+        lastUsed: Date.now(),
+        config: cfg
+      };
+
+      return databricksConnection;
+    } catch (error) {
+      console.error(`❌ Failed to connect to Databricks: ${(error as any).message}`);
+      if ((error as any).code === 'MODULE_NOT_FOUND') {
+        throw new Error('Databricks SQL driver not found. Please install: npm install @databricks/sql');
+      }
+      throw error;
+    }
+  }
+
+  async executeQuery(sql: string, cfg: DbCfg): Promise<any> {
+    const databricksConnection = await this.getConnection(cfg);
+    
+    try {
+      const session = await databricksConnection.connection.openSession();
+      const operation = await session.executeStatement(sql, {
+        runAsync: true,
+        maxRows: 10000,
+      });
+      
+      const result = await operation.fetchAll();
+      await operation.close();
+      await session.close();
+      
+      databricksConnection.lastUsed = Date.now();
+      return result;
+      
+    } catch (error) {
+      console.error(`❌ Databricks query execution failed: ${(error as any).message}`);
+      // Mark connection as potentially bad
+      databricksConnection.isConnected = false;
+      throw error;
+    }
+  }
+
+  private async cleanupIdleConnections() {
+    const now = Date.now();
+    
+    for (const [key, connection] of this.connections.entries()) {
+      if (now - connection.lastUsed > this.IDLE_TIMEOUT) {
+        console.error(`🧹 Cleaning up idle Databricks connection: ${key}`);
+        try {
+          await connection.connection.close();
+        } catch (error) {
+          console.warn(`Warning: Error closing idle connection: ${(error as any).message}`);
+        }
+        this.connections.delete(key);
+      }
+    }
+  }
+
+  async closeAll() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+    }
+
+    for (const [key, connection] of this.connections.entries()) {
+      try {
+        await connection.connection.close();
+      } catch (error) {
+        console.warn(`Warning: Error closing connection ${key}: ${(error as any).message}`);
+      }
+    }
+    
+    this.connections.clear();
+    this.initializationPromises.clear();
+  }
+}
+
+// Global Databricks connection manager
+const databricksManager = new DatabricksConnectionManager();
+
+// Warmup function to pre-initialize Databricks connections
+async function warmupDatabricksConnection() {
+  // Check if we have Databricks configuration
+  if (process.env.DATABASE_TYPE === 'databricks' && process.env.DATABRICKS_HOST) {
+    const cfg: DbCfg = {
+      databaseType: 'databricks',
+      host: process.env.DATABRICKS_HOST,
+      user: process.env.DATABRICKS_USER || 'databricks',
+      password: process.env.DATABRICKS_TOKEN || '',
+      database: process.env.DATABRICKS_CATALOG || 'default',
+      port: process.env.DATABRICKS_PORT ? parseInt(process.env.DATABRICKS_PORT, 10) : undefined,
+      databricksHttpPath: process.env.DATABRICKS_HTTP_PATH,
+    };
+
+    try {
+      console.error('🚀 Warming up Databricks connection...');
+      await databricksManager.getConnection(cfg);
+      console.error('🎯 Databricks connection ready for use!');
+    } catch (error) {
+      console.warn(`⚠️  Databricks warmup failed: ${(error as any).message}`);
+    }
+  }
+}
+
+// Cleanup on exit
+process.on('SIGINT', async () => {
+  console.error('\n🔄 Shutting down Databricks connections...');
+  await databricksManager.closeAll();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error('\n🔄 Shutting down Databricks connections...');
+  await databricksManager.closeAll();
+  process.exit(0);
+});
+
 /* ── DB query executor (unchanged from reference) ───────────────────── */
 export async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
-  if (cfg.databaseType === "postgres") {
+  if (cfg.databaseType === "mongodb") {
+    try {
+      const mongodb = await import('mongodb');
+      const MongoClient = mongodb.MongoClient;
+      const connectionString = Connector.buildMongoConnectionString(cfg);
+      const client = new MongoClient(connectionString, cfg.mongoOptions);
+      try {
+        await client.connect();
+        await Connector.loadSchemaMap(client, cfg.database, 'mongodb');
+        await Connector.loadTableSizes(client, cfg.database, 'mongodb');
+        return await Connector.runQuery(sql, params, cfg);
+      } finally {
+        await client.close();
+      }
+    } catch (error) {
+      if ((error as any).code === 'MODULE_NOT_FOUND') {
+        throw new Error('MongoDB driver not found. Please install mongodb package: npm install mongodb');
+      }
+      throw error;
+    }
+  } else if (cfg.databaseType === "postgres") {
     const client = new PgClient({
       host: cfg.host,
       port: cfg.port || 5432,
@@ -47,6 +286,9 @@ export async function runQuery(cfg: DbCfg, sql: string, params: any[] = []) {
     } finally {
       await client.end();
     }
+  } else if (cfg.databaseType === "databricks") {
+    // Use the connection manager for improved performance
+    return await databricksManager.executeQuery(sql, cfg);
   } else {
     const conn = await createConnection({
       host: cfg.host,
@@ -117,8 +359,18 @@ export async function orchestrate(prompt: string, apiKey: string, databaseConnec
     /* 3. after socket opens, send schema then orchestrate */
     socket.on("connect", async () => {
       log("connected", socket.id);
+      
+      // Pre-warm Databricks connection if this is a Databricks configuration
+      if (cfg && cfg.databaseType === 'databricks') {
+        try {
+          await databricksManager.getConnection(cfg);
+        } catch (error) {
+          console.warn(`Databricks pre-warm failed: ${(error as any).message}`);
+        }
+      }
+      
       if (!databaseConnectionId && cfg) {
-        const { schemaMap, indexMap } = await Connector.initMetadata(cfg);
+        const { schemaMap, indexMap } = await Connector.initMetadata(cfg as any);
         // console.log(`CLI: Loaded schema with ${Object.keys(schemaMap).length} tables`);
         socket.emit("schema_info", { schemaMap, indexMap });
       } else {
@@ -228,7 +480,8 @@ This tool excels at answering specific analytical questions about data by handli
   capabilities: { resources: {}, tools: {} },
 });
 
-server.tool(
+registerTool(
+  server,
   "query-database",
   `# Data Analyst Agent: Reasoning Analysis Mode
 
@@ -266,12 +519,21 @@ This tool translates natural language into multi-step SQL analysis plans and exe
       database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
+      mongoOptions: z.object({
+        authSource: z.string().optional(),
+        ssl: z.boolean().optional(),
+        replicaSet: z.string().optional(),
+        readPreference: z.enum(["primary", "secondary", "primaryPreferred", "secondaryPreferred", "nearest"]).optional(),
+        maxPoolSize: z.number().optional(),
+        serverSelectionTimeoutMS: z.number().optional(),
+        connectTimeoutMS: z.number().optional(),
+      }).optional(),
     }).optional(),
     celpApiKey: z.string().optional(),
     databaseConnectionId: z.string().optional(),
   },
   async (args) => {
-    const { prompt, databaseConfig, databaseConnectionId, celpApiKey } = args;
+    const { prompt, databaseConfig: databaseConfigRaw, databaseConnectionId, celpApiKey } = args;
     // console.log({args})
     // if (process.env.DONT_USE_DB_ENVS !== "true") {
     //   if (databaseConfig) {
@@ -285,28 +547,33 @@ This tool translates natural language into multi-step SQL analysis plans and exe
     //     process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
     //   }
     // }
-    let cfg: DbCfg | undefined;
-    if (databaseConfig && process.env.DONT_USE_DB_ENVS === "true") {
-      cfg = {
-        databaseType: databaseConfig.databaseType as DbType,
-        host: databaseConfig.host || "localhost",
-        user: databaseConfig.user || "root",
-        password: databaseConfig.password || "",
-        database: databaseConfig.database || "test_db",
-        port: databaseConfig.port,
-      };
-    } else {
-      if (process.env.DONT_USE_DB_ENVS !== "true") {
-        cfg = {
-          databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-          host: process.env.DATABASE_HOST || "localhost",
-          user: process.env.DATABASE_USER || "root",
-          password: process.env.DATABASE_PASSWORD || "",
-          database: process.env.DATABASE_NAME || "test_db",
-          port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-        };
-      }
+    let databaseConfig: typeof databaseConfigRaw | undefined;
+    if(process.env.DONT_USE_DB_ENVS === "true") {
+      databaseConfig = databaseConfigRaw;
     }
+    const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
+      databaseType: process.env.DATABASE_TYPE as DbType,
+      host: process.env.DATABASE_HOST || process.env.DATABRICKS_HOST || "localhost",
+      user: process.env.DATABASE_USER || process.env.DATABRICKS_USER || "postgres",
+      password: process.env.DATABASE_PASSWORD || process.env.DATABRICKS_TOKEN || "postgres",
+      database: process.env.DATABASE_NAME || process.env.DATABRICKS_CATALOG || "test_db",
+      port: (process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined) || (process.env.DATABRICKS_PORT ? parseInt(process.env.DATABRICKS_PORT, 10) : undefined),
+      mongoOptions: {
+        authSource: process.env.MONGO_AUTH_SOURCE || 'admin',
+        ssl: process.env.MONGO_SSL === 'true',
+        replicaSet: process.env.MONGO_REPLICA_SET,
+        readPreference: process.env.MONGO_READ_PREFERENCE as "primary" | "secondary" | "primaryPreferred" | "secondaryPreferred" | "nearest",
+        maxPoolSize: process.env.MONGO_MAX_POOL_SIZE ? parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) : 10,
+        serverSelectionTimeoutMS: process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS ? parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) : 5000,
+        connectTimeoutMS: process.env.MONGO_CONNECT_TIMEOUT_MS ? parseInt(process.env.MONGO_CONNECT_TIMEOUT_MS, 10) : 10000,
+      },
+      url: process.env.MONGO_URL,
+      databricksHttpPath: process.env.DATABRICKS_HTTP_PATH,
+      databricksOptions: {
+        httpPath: process.env.DATABRICKS_HTTP_PATH,
+        schema: process.env.DATABRICKS_SCHEMA,
+      },
+    } : undefined;
 
     // const cfg: DbCfg = databaseConfig || {
     //   databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
@@ -394,23 +661,24 @@ This tool translates natural language into multi-step SQL analysis plans and exe
 //     }
 //   },
 // );
-server.tool(
+registerTool(
+  server,
   "query-database-turbo",
   `### **When to Use (Natural-Language Heuristics)**
 
-Because the model sees only the *user’s question* and minimal schema hints, Turbo Mode should activate automatically **whenever the request exhibits every one of these surface-level cues**.  Each cue corresponds to a first-principles driver of SQL complexity that the model *can* infer without deep schema knowledge:
+Because the model sees only the *user's question* and minimal schema hints, Turbo Mode should activate automatically **whenever the request exhibits every one of these surface-level cues**.  Each cue corresponds to a first-principles driver of SQL complexity that the model *can* infer without deep schema knowledge:
 
-| Signal in the User’s Question                                                                                                   | Why It Indicates Turbo Is Safe                                                                      |
+| Signal in the User's Question                                                                                                   | Why It Indicates Turbo Is Safe                                                                      |
 | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Single Factual Verb** — verbs like “count,” “list,” “show,” “sum,” “average,” or “max/min,” used **once**.                    | One aggregate or projection keeps the SQL to a single \`SELECT\`.                                     |
-| **At Most One Qualifier Clause** — a lone filter such as a date range, status, or simple equality (“where status = ‘active’”).  | Few filters avoid nested logic or subqueries.                                                       |
-| **No Comparative Language** — absent words like “versus,” “compare,” “trend,” “change over time,” “prior year,” “by each,” etc. | Comparisons imply multiple groupings, time windows, or self-joins.                                  |
-| **No Multi-Dimensional Grouping Phrases** — avoids “by region and product,” “per user per month,” “split across categories.”    | Multiple dimensions require complex \`GROUP BY\` and often joins.                                     |
-| **Mentions One Table-Like Concept** — either explicitly (“in \`orders\`”) or implicitly (“orders today,” “users last week”).      | Referencing several entities hints at join logic the model can’t verify quickly.                    |
-| **Requests Raw IDs or a Small Top-N List** — e.g., “give me the top 5 order IDs.”                                               | The result set will be tiny, so execution latency is dominated by query planning—not data transfer. |
-| **No Need for Explanation or Visualization** — the user asks only for the numbers or rows, not “explain why” or “graph this.”   | Generating narrative or charts costs tokens and time; Turbo avoids it.                              |
+| **Single Factual Verb** — verbs like "count," "list," "show," "sum," "average," or "max/min," used **once**.                    | One aggregate or projection keeps the SQL to a single \`SELECT\`.                                     |
+| **At Most One Qualifier Clause** — a lone filter such as a date range, status, or simple equality ("where status = 'active'").  | Few filters avoid nested logic or subqueries.                                                       |
+| **No Comparative Language** — absent words like "versus," "compare," "trend," "change over time," "prior year," "by each," etc. | Comparisons imply multiple groupings, time windows, or self-joins.                                  |
+| **No Multi-Dimensional Grouping Phrases** — avoids "by region and product," "per user per month," "split across categories."    | Multiple dimensions require complex \`GROUP BY\` and often joins.                                     |
+| **Mentions One Table-Like Concept** — either explicitly ("in \`orders\`") or implicitly ("orders today," "users last week").      | Referencing several entities hints at join logic the model can't verify quickly.                    |
+| **Requests Raw IDs or a Small Top-N List** — e.g., "give me the top 5 order IDs."                                               | The result set will be tiny, so execution latency is dominated by query planning—not data transfer. |
+| **No Need for Explanation or Visualization** — the user asks only for the numbers or rows, not "explain why" or "graph this."   | Generating narrative or charts costs tokens and time; Turbo avoids it.                              |
 
-> **Quick mental check**: *Could you answer this with a single short sentence and a single‐line SQL query template?*
+> **Quick mental check**: *Could you answer this with a single short sentence and a single-line SQL query template?*
 > If yes, Turbo Mode is appropriate.
 
 ---
@@ -425,26 +693,36 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
 
 ### Effective Prompts
 
-* “How many active users signed up last week?”
-* “List the five most expensive orders.”
-* “Show the total revenue for March 2025.”
-* “What is the average session length today?”`,
+* "How many active users signed up last week?"
+* "List the five most expensive orders."
+* "Show the total revenue for March 2025."
+* "What is the average session length today?"`,
   {
     prompt: z.string(),
     databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      databaseType: z.enum(["postgres", "mysql", "mongodb", "databricks"]).optional(),
       host: z.string().optional(),
       user: z.string().optional(),
       password: z.string().optional(),
       database: z.string().optional(),
       port: z.number().optional(),
       disableSSL: z.enum(["true", "false"]).optional(),
+      mongoOptions: z.object({
+        authSource: z.string().optional(),
+        ssl: z.boolean().optional(),
+        replicaSet: z.string().optional(),
+        readPreference: z.enum(["primary", "secondary", "primaryPreferred", "secondaryPreferred", "nearest"]).optional(),
+        maxPoolSize: z.number().optional(),
+        serverSelectionTimeoutMS: z.number().optional(),
+        connectTimeoutMS: z.number().optional(),
+      }).optional(),
+      databricksHttpPath: z.string().optional(),  
     }).optional(),
     databaseConnectionId: z.string().optional(),
     celpApiKey: z.string().optional(),
   },
   async (args) => {
-    const { prompt, databaseConfig, databaseConnectionId, celpApiKey } = args;
+    const { prompt, databaseConfig: databaseConfigRaw, databaseConnectionId, celpApiKey } = args;
     // console.log({args})
     // if (process.env.DONT_USE_DB_ENVS !== "true") {
     //   if (databaseConfig) {
@@ -458,28 +736,33 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
     //     process.env.DATABASE_CONNECTION_ID = databaseConnectionId;
     //   }
     // }
-    let cfg: DbCfg | undefined;
-    if (databaseConfig && process.env.DONT_USE_DB_ENVS === "true") {
-      cfg = {
-        databaseType: databaseConfig.databaseType as DbType,
-        host: databaseConfig.host || "localhost",
-        user: databaseConfig.user || "root",
-        password: databaseConfig.password || "",
-        database: databaseConfig.database || "test_db",
-        port: databaseConfig.port,
-      };
-    } else {
-      if (process.env.DONT_USE_DB_ENVS !== "true") {
-        cfg = {
-          databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
-          host: process.env.DATABASE_HOST || "localhost",
-          user: process.env.DATABASE_USER || "root",
-          password: process.env.DATABASE_PASSWORD || "",
-          database: process.env.DATABASE_NAME || "test_db",
-          port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
-        };
-      }
+    let databaseConfig: typeof databaseConfigRaw | undefined;
+    if(process.env.DONT_USE_DB_ENVS === "true") {
+      databaseConfig = databaseConfigRaw;
     }
+    const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
+      databaseType: process.env.DATABASE_TYPE as DbType,
+      host: process.env.DATABASE_HOST || process.env.DATABRICKS_HOST || "localhost",
+      user: process.env.DATABASE_USER || process.env.DATABRICKS_USER || "postgres",
+      password: process.env.DATABASE_PASSWORD || process.env.DATABRICKS_TOKEN || "postgres",
+      database: process.env.DATABASE_NAME || process.env.DATABRICKS_CATALOG || "test_db",
+      port: (process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined) || (process.env.DATABRICKS_PORT ? parseInt(process.env.DATABRICKS_PORT, 10) : undefined),
+      mongoOptions: {
+        authSource: process.env.MONGO_AUTH_SOURCE || 'admin',
+        ssl: process.env.MONGO_SSL === 'true',
+        replicaSet: process.env.MONGO_REPLICA_SET,
+        readPreference: process.env.MONGO_READ_PREFERENCE as "primary" | "secondary" | "primaryPreferred" | "secondaryPreferred" | "nearest",
+        maxPoolSize: process.env.MONGO_MAX_POOL_SIZE ? parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) : 10,
+        serverSelectionTimeoutMS: process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS ? parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) : 5000,
+        connectTimeoutMS: process.env.MONGO_CONNECT_TIMEOUT_MS ? parseInt(process.env.MONGO_CONNECT_TIMEOUT_MS, 10) : 10000,
+      },
+      url: process.env.MONGO_URL,
+      databricksHttpPath: process.env.DATABRICKS_HTTP_PATH,
+      databricksOptions: {
+        httpPath: process.env.DATABRICKS_HTTP_PATH,
+        schema: process.env.DATABRICKS_SCHEMA,
+      },
+    } : undefined;
 
     // const cfg: DbCfg = databaseConfig || {
     //   databaseType: (process.env.DATABASE_TYPE as DbType) || "postgres",
@@ -503,25 +786,26 @@ Because the model sees only the *user’s question* and minimal schema hints, Tu
   },
 );
 
-server.tool(
+registerTool(
+  server,
   "get-schema",
   `
   Returns the schema map for the database. Only use this tool after previous attempts fail, or when specifically requested
 `,
   {
     databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      databaseType: z.enum(["postgres", "mysql", "mongodb", "databricks"]).optional(),
       host: z.string().optional(),
       user: z.string().optional(),
       password: z.string().optional(),
       database: z.string().optional(),
       port: z.number().optional(),
-      disableSSL: z.enum(["true", "false"]).optional(),
+      disableSSL: z.enum(["true", "false"]).optional()
     }).optional(),
     apiKey: z.string().optional(),
     databaseConnectionId: z.string().optional(),
   },
-  async ({ databaseConfig, apiKey, databaseConnectionId }) => {
+  async ({ databaseConfig: databaseConfigRaw, apiKey, databaseConnectionId }) => {
     // console.log({args, ctx})
     // console.log('attempting to get schema for')
     // if (process.env.CELP_API_KEY) {
@@ -533,7 +817,6 @@ server.tool(
       // Proxy to streaming API when using remote database connection
       // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
         const serverUrl = process.env.STREAMING_API_URL || "https://celp-mcp-server.onrender.com";
-
       const socket: Socket<DefaultEventsMap, DefaultEventsMap> = io(serverUrl, {
         auth: apiKey ? { token: apiKey } : undefined,
         extraHeaders: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
@@ -569,14 +852,34 @@ server.tool(
         });
       });
     }
+    let databaseConfig: typeof databaseConfigRaw | undefined;
+    if(process.env.DONT_USE_DB_ENVS === "true") {
+      databaseConfig = databaseConfigRaw;
+    }
     const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
       databaseType: process.env.DATABASE_TYPE as DbType,
-      host: process.env.DATABASE_HOST || "localhost",
-      user: process.env.DATABASE_USER || "root",
-      password: process.env.DATABASE_PASSWORD || "",
-      database: process.env.DATABASE_NAME || "test_db",
-      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+      host: process.env.DATABASE_HOST || process.env.DATABRICKS_HOST || "localhost",
+      user: process.env.DATABASE_USER || process.env.DATABRICKS_USER || "postgres",
+      password: process.env.DATABASE_PASSWORD || process.env.DATABRICKS_TOKEN || "postgres",
+      database: process.env.DATABASE_NAME || process.env.DATABRICKS_CATALOG || "test_db",
+      port: (process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined) || (process.env.DATABRICKS_PORT ? parseInt(process.env.DATABRICKS_PORT, 10) : undefined),
+      mongoOptions: {
+        authSource: process.env.MONGO_AUTH_SOURCE || 'admin',
+        ssl: process.env.MONGO_SSL === 'true',
+        replicaSet: process.env.MONGO_REPLICA_SET,
+        readPreference: process.env.MONGO_READ_PREFERENCE as "primary" | "secondary" | "primaryPreferred" | "secondaryPreferred" | "nearest",
+        maxPoolSize: process.env.MONGO_MAX_POOL_SIZE ? parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) : 10,
+        serverSelectionTimeoutMS: process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS ? parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) : 5000,
+        connectTimeoutMS: process.env.MONGO_CONNECT_TIMEOUT_MS ? parseInt(process.env.MONGO_CONNECT_TIMEOUT_MS, 10) : 10000,
+      },
+      url: process.env.MONGO_URL,
+      databricksHttpPath: process.env.DATABRICKS_HTTP_PATH,
+      databricksOptions: {
+        httpPath: process.env.DATABRICKS_HTTP_PATH,
+        schema: process.env.DATABRICKS_SCHEMA,
+      },
     } : undefined;
+// throw new Error(JSON.stringify(cfg))
     const { schemaMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
       content: [
@@ -589,14 +892,15 @@ server.tool(
   }
 );
 
-server.tool(
+registerTool(
+  server,
   "get-index-map",
   `
   Returns the index map for the database. Only use this tool after previous attempts fail, or when specifically requested
 `,
   {
     databaseConfig: z.object({
-      databaseType: z.enum(["postgres", "mysql"]).optional(),
+      databaseType: z.enum(["postgres", "mysql", "mongodb", "databricks"]).optional(),
       host: z.string().optional(),
       user: z.string().optional(),
       password: z.string().optional(),
@@ -607,7 +911,7 @@ server.tool(
     apiKey: z.string().optional(),
     databaseConnectionId: z.string().optional(),
   },
-  async ({ databaseConfig, apiKey, databaseConnectionId }) => {
+  async ({ databaseConfig: databaseConfigRaw, apiKey, databaseConnectionId }) => {
     // console.log('attempting to get index map for')
     if (apiKey && databaseConnectionId) {
       // const serverUrl = process.env.STREAMING_API_URL || "http://localhost:5006";
@@ -689,13 +993,33 @@ server.tool(
         });
       });
     }
+
+    let databaseConfig: typeof databaseConfigRaw | undefined;
+    if(process.env.DONT_USE_DB_ENVS === "true") {
+      databaseConfig = databaseConfigRaw;
+    }
     const cfg = databaseConfig || (process.env.DONT_USE_DB_ENVS !== "true") ? {
       databaseType: process.env.DATABASE_TYPE as DbType,
-      host: process.env.DATABASE_HOST || "localhost",
-      user: process.env.DATABASE_USER || "postgres",
-      password: process.env.DATABASE_PASSWORD || "postgres",
-      database: process.env.DATABASE_NAME || "test_db",
-      port: process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined,
+      host: process.env.DATABASE_HOST || process.env.DATABRICKS_HOST || "localhost",
+      user: process.env.DATABASE_USER || process.env.DATABRICKS_USER || "postgres",
+      password: process.env.DATABASE_PASSWORD || process.env.DATABRICKS_TOKEN || "postgres",
+      database: process.env.DATABASE_NAME || process.env.DATABRICKS_CATALOG || "test_db",
+      port: (process.env.DATABASE_PORT ? parseInt(process.env.DATABASE_PORT, 10) : undefined) || (process.env.DATABRICKS_PORT ? parseInt(process.env.DATABRICKS_PORT, 10) : undefined),
+      mongoOptions: {
+        authSource: process.env.MONGO_AUTH_SOURCE || 'admin',
+        ssl: process.env.MONGO_SSL === 'true',
+        replicaSet: process.env.MONGO_REPLICA_SET,
+        readPreference: process.env.MONGO_READ_PREFERENCE as "primary" | "secondary" | "primaryPreferred" | "secondaryPreferred" | "nearest",
+        maxPoolSize: process.env.MONGO_MAX_POOL_SIZE ? parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) : 10,
+        serverSelectionTimeoutMS: process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS ? parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) : 5000,
+        connectTimeoutMS: process.env.MONGO_CONNECT_TIMEOUT_MS ? parseInt(process.env.MONGO_CONNECT_TIMEOUT_MS, 10) : 10000,
+      },
+      url: process.env.MONGO_URL,
+      databricksHttpPath: process.env.DATABRICKS_HTTP_PATH,
+      databricksOptions: {
+        httpPath: process.env.DATABRICKS_HTTP_PATH,
+        schema: process.env.DATABRICKS_SCHEMA,
+      },
     } : undefined;
     const { indexMap } = await Connector.initMetadata(cfg as ConnectorCfg);
     return {
@@ -710,7 +1034,15 @@ server.tool(
 );
 
 (async () => {
+  // Start warmup in parallel with server connection
+  const warmupPromise = warmupDatabricksConnection();
+  
   await server.connect(new StdioServerTransport());
+  
+  // Warmup can continue in background
+  warmupPromise.catch((e) => {
+    console.warn("Databricks warmup failed:", e);
+  });
 })().catch((e) => {
   console.error("Fatal:", e);
   process.exit(1);
